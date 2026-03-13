@@ -8,7 +8,7 @@ cache/
 contracts/out/
 contracts/cache/
 
-# Environment
+# Environment — never commit secrets
 .env
 .env.local
 .env.*.local
@@ -25,6 +25,7 @@ Thumbs.db
 
 # Foundry
 contracts/lib/
+contracts/broadcast/
 
 # Frontend
 frontend/dist/
@@ -34,3 +35,8 @@ filler/dist/
 
 # Logs
 *.log
+
+# Misc
+*.tgz
+coverage/
+lcov.info

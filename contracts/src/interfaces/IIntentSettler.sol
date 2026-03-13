@@ -3,7 +3,7 @@ pragma solidity ^0.8.24;
 
 import {OrderLib} from "../libs/OrderLib.sol";
 
-/// @title IIntentSettler - Settlement destination on HyperEVM
+/// @title IIntentSettler - Settlement destination on Arbitrum Sepolia
 /// @notice Manages fill execution and settlement verification
 interface IIntentSettler {
     // ──────────────────────────── Events ────────────────────────────
@@ -19,6 +19,8 @@ interface IIntentSettler {
 
     event SettlementVerified(bytes32 indexed orderId, address indexed filler, bytes32 proofHash);
 
+    event TEESettlementVerified(bytes32 indexed orderId, address indexed filler, address enclaveSigner);
+
     // ──────────────────────────── Functions ────────────────────────────
 
     /// @notice Fill an order — filler fronts funds to the user
@@ -26,6 +28,9 @@ interface IIntentSettler {
 
     /// @notice Verify settlement via ZK BEEFY proof
     function verifySettlement(bytes32 orderId, bytes calldata proof) external;
+
+    /// @notice Verify settlement via TEE attestation (fast path ~5-10s)
+    function verifyTEESettlement(bytes32 orderId, bytes calldata teeAttestation, bytes calldata signature) external;
 
     /// @notice Get fill details for an order
     function getFill(bytes32 orderId) external view returns (OrderLib.Fill memory);

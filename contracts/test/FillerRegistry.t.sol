@@ -112,6 +112,10 @@ contract FillerRegistryTest is Test {
     }
 
     function test_getFillerScore() public {
+        // Set test contract as intentSettler so recordFill/recordSettlement work
+        vm.prank(owner);
+        registry.setIntentSettler(address(this));
+
         vm.prank(fillerA);
         registry.register(STAKE);
 

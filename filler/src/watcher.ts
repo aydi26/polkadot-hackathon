@@ -25,11 +25,13 @@ export class OrderWatcher {
   private provider: ethers.JsonRpcProvider;
   private gateway: ethers.Contract;
   private handlers: OrderHandler[] = [];
+  private lastBlock: number = 0;
+  private pollTimer: ReturnType<typeof setInterval> | null = null;
+  private seenOrders: Set<string> = new Set();
 
   constructor() {
-    // TODO: For hackathon, watching EVM events on the source chain
-    // In production: use @polkadot/api for Asset Hub substrate events
-    this.provider = new ethers.JsonRpcProvider(config.rpcAssetHub);
+    // Watches EVM events on the source chain
+    this.provider = new ethers.JsonRpcProvider(config.rpcSource);
     this.gateway = new ethers.Contract(config.intentGatewayAddress, GATEWAY_ABI, this.provider);
   }
 
@@ -38,32 +40,64 @@ export class OrderWatcher {
   }
 
   async start(): Promise<void> {
-    console.log("[Watcher] Listening for OrderPlaced events...");
+    console.log("[Watcher] Listening for OrderPlaced events (polling mode)...");
 
-    // Listen for new events
-    this.gateway.on("OrderPlaced", async (orderId, user, token, amount, destChain, destAddress, feeOffer, deadline) => {
-      const order: OrderEvent = {
-        orderId,
-        user,
-        token,
-        amount,
-        destChain,
-        destAddress,
-        feeOffer,
-        deadline,
-      };
+    // Start from current block
+    this.lastBlock = await this.provider.getBlockNumber();
+    console.log(`[Watcher] Starting from block ${this.lastBlock}`);
 
-      console.log(`[Watcher] New order detected: ${orderId}`);
-      console.log(`  User: ${user}, Amount: ${ethers.formatUnits(amount, 6)} USDC, Fee: ${ethers.formatUnits(feeOffer, 6)} USDC`);
+    // Poll every 4 seconds
+    this.pollTimer = setInterval(() => this.poll(), 4000);
+    // Also poll immediately
+    await this.poll();
+  }
 
-      for (const handler of this.handlers) {
-        try {
-          await handler(order);
-        } catch (err) {
-          console.error(`[Watcher] Handler error for order ${orderId}:`, err);
+  private async poll(): Promise<void> {
+    try {
+      const currentBlock = await this.provider.getBlockNumber();
+      if (currentBlock <= this.lastBlock) return;
+
+      const events = await this.gateway.queryFilter(
+        "OrderPlaced",
+        this.lastBlock + 1,
+        currentBlock
+      );
+
+      for (const event of events) {
+        const log = event as ethers.EventLog;
+        const orderId = log.args[0] as string;
+
+        // Skip already-seen orders
+        if (this.seenOrders.has(orderId)) continue;
+        this.seenOrders.add(orderId);
+
+        const order: OrderEvent = {
+          orderId,
+          user: log.args[1] as string,
+          token: log.args[2] as string,
+          amount: log.args[3] as bigint,
+          destChain: Number(log.args[4]),
+          destAddress: log.args[5] as string,
+          feeOffer: log.args[6] as bigint,
+          deadline: log.args[7] as bigint,
+        };
+
+        console.log(`[Watcher] New order detected: ${orderId}`);
+        console.log(`  User: ${order.user}, Amount: ${ethers.formatUnits(order.amount, 6)} USDC, Fee: ${ethers.formatUnits(order.feeOffer, 6)} USDC`);
+
+        for (const handler of this.handlers) {
+          try {
+            await handler(order);
+          } catch (err) {
+            console.error(`[Watcher] Handler error for order ${orderId}:`, err);
+          }
         }
       }
-    });
+
+      this.lastBlock = currentBlock;
+    } catch (err) {
+      console.error("[Watcher] Poll error:", err);
+    }
   }
 
   async getActiveOrders(): Promise<string[]> {
@@ -75,6 +109,7 @@ export class OrderWatcher {
   }
 
   async stop(): Promise<void> {
+    if (this.pollTimer) clearInterval(this.pollTimer);
     this.gateway.removeAllListeners();
     console.log("[Watcher] Stopped.");
   }

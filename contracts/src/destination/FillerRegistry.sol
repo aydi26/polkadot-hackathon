@@ -10,7 +10,7 @@ import {Constants} from "../libs/Constants.sol";
 
 /// @title FillerRegistry - Registry for fillers (LPs)
 /// @notice Optional contract for filler registration, staking, and reputation tracking
-/// @dev Deployed on HyperEVM
+/// @dev Deployed on destination chain
 contract FillerRegistry is IFillerRegistry, ReentrancyGuard, Ownable {
     using SafeERC20 for IERC20;
 
@@ -18,6 +18,9 @@ contract FillerRegistry is IFillerRegistry, ReentrancyGuard, Ownable {
 
     /// @notice USDC token used for staking
     IERC20 public stakeToken;
+
+    /// @notice IntentSettler address — only settler can record fills/settlements
+    address public intentSettler;
 
     /// @notice Filler data
     mapping(address => FillerInfo) internal _fillers;
@@ -35,6 +38,12 @@ contract FillerRegistry is IFillerRegistry, ReentrancyGuard, Ownable {
 
     constructor(address _owner, address _stakeToken) Ownable(_owner) {
         stakeToken = IERC20(_stakeToken);
+    }
+
+    // ──────────────────────────── Admin ────────────────────────────
+
+    function setIntentSettler(address _intentSettler) external onlyOwner {
+        intentSettler = _intentSettler;
     }
 
     // ──────────────────────────── Core Functions ────────────────────────────
@@ -108,17 +117,17 @@ contract FillerRegistry is IFillerRegistry, ReentrancyGuard, Ownable {
 
     // ──────────────────────────── Filler Stats ────────────────────────────
 
-    /// @notice Increment fill count for a filler (called by IntentSettler)
+    /// @notice Increment fill count for a filler (restricted to IntentSettler)
     function recordFill(address filler) external {
-        // TODO: Access control — only IntentSettler
+        require(msg.sender == intentSettler, "Only IntentSettler");
         if (_fillers[filler].active) {
             _fillers[filler].ordersFilled++;
         }
     }
 
-    /// @notice Increment settlement count for a filler
+    /// @notice Increment settlement count for a filler (restricted to IntentSettler)
     function recordSettlement(address filler) external {
-        // TODO: Access control — only IntentSettler
+        require(msg.sender == intentSettler, "Only IntentSettler");
         if (_fillers[filler].active) {
             _fillers[filler].ordersSettled++;
         }
@@ -136,7 +145,7 @@ contract FillerRegistry is IFillerRegistry, ReentrancyGuard, Ownable {
         return _activeFillers;
     }
 
-    /// @notice Get filler score (simple: orders settled / orders filled ratio × stake)
+    /// @notice Get filler score (simple: orders settled / orders filled ratio x stake)
     function getFillerScore(address filler) external view returns (uint256) {
         FillerInfo storage info = _fillers[filler];
         if (!info.active || info.ordersFilled == 0) return 0;
