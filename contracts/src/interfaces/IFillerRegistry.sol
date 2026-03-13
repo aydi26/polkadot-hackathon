@@ -31,4 +31,10 @@ interface IFillerRegistry {
 
     /// @notice Get all active fillers sorted by score
     function getActiveFillers() external view returns (address[] memory);
+
+    /// @notice Record a fill for reputation tracking
+    function recordFill(address filler) external;
+
+    /// @notice Record a settlement for reputation tracking
+    function recordSettlement(address filler) external;
 }

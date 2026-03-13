@@ -10,11 +10,22 @@ import {OrderLib} from "../libs/OrderLib.sol";
 import {Constants} from "../libs/Constants.sol";
 import {IIntentGateway} from "../interfaces/IIntentGateway.sol";
 import {OrderStore} from "./OrderStore.sol";
+import {
+    IIsmpModule,
+    IncomingPostRequest,
+    IncomingPostResponse,
+    PostRequest,
+    PostResponse,
+    BridgeMessage,
+    BridgeMessageCodec,
+    MessageType
+} from "../interfaces/IISMPBridge.sol";
 
 /// @title IntentGateway - Escrow source contract
 /// @notice Manages order creation, escrow locking, and release after ZK proof verification
-/// @dev Deployed on Polkadot Asset Hub (or EVM-compatible testnet for hackathon)
-contract IntentGateway is IIntentGateway, OrderStore, ReentrancyGuard, Pausable, Ownable {
+/// @dev Deployed on source chain (Sepolia for hackathon, Asset Hub in production)
+/// @dev ERC-7683: Equivalent to IOriginSettler — manages cross-chain order creation and escrow
+contract IntentGateway is IIntentGateway, IIsmpModule, OrderStore, ReentrancyGuard, Pausable, Ownable {
     using SafeERC20 for IERC20;
 
     // ──────────────────────────── State ────────────────────────────
@@ -22,7 +33,7 @@ contract IntentGateway is IIntentGateway, OrderStore, ReentrancyGuard, Pausable,
     /// @notice Whitelisted tokens for bridging
     mapping(address => bool) public supportedTokens;
 
-    /// @notice ISMP handler address for proof verification
+    /// @notice ISMP host address for cross-chain messaging
     address public ismpHandler;
 
     // ──────────────────────────── Constructor ────────────────────────────
@@ -56,6 +67,7 @@ contract IntentGateway is IIntentGateway, OrderStore, ReentrancyGuard, Pausable,
     // ──────────────────────────── Core Functions ────────────────────────────
 
     /// @inheritdoc IIntentGateway
+    /// @dev ERC-7683: Equivalent to IOriginSettler.open()
     function createOrder(
         address token,
         uint256 amount,
@@ -102,8 +114,7 @@ contract IntentGateway is IIntentGateway, OrderStore, ReentrancyGuard, Pausable,
         require(order.status == OrderLib.OrderStatus.Filled, "Order not filled");
         require(fillerAddress != address(0), "Invalid filler");
 
-        // TODO: Verify ZK BEEFY proof via ISMP handler
-        // For hackathon: simplified proof verification
+        // Verify ZK BEEFY proof via ISMP handler (hackathon: simplified)
         _verifyProof(orderId, proof);
 
         order.status = OrderLib.OrderStatus.Settled;
@@ -126,8 +137,7 @@ contract IntentGateway is IIntentGateway, OrderStore, ReentrancyGuard, Pausable,
         order.status = OrderLib.OrderStatus.Fallback;
         _removeActiveOrder(orderId);
 
-        // TODO: Initiate XCM v5 transfer to destination via Hyperbridge
-        // For hackathon: emit event for off-chain relay
+        // In production: dispatch ISMP post request to deliver funds on dest chain
         emit FallbackExecuted(orderId, order.user, order.amount, order.destAddress);
     }
 
@@ -144,6 +154,34 @@ contract IntentGateway is IIntentGateway, OrderStore, ReentrancyGuard, Pausable,
         IERC20(order.token).safeTransfer(order.user, order.amount);
 
         emit OrderCancelled(orderId, order.user, order.amount);
+    }
+
+    // ──────────────────────────── IIsmpModule ────────────────────────────
+
+    /// @notice Handle incoming ISMP message — FILL_CONFIRMATION from destination chain
+    /// @dev Called by the ISMP host when a filler confirms a fill on the destination chain.
+    ///      Automatically marks the order as Filled so escrow can be released.
+    function onAccept(IncomingPostRequest memory incoming) external override {
+        require(msg.sender == ismpHandler, "Only ISMP host");
+        BridgeMessage memory bridgeMsg = BridgeMessageCodec.decode(incoming.request.body);
+
+        if (bridgeMsg.msgType == MessageType.FILL_CONFIRMATION) {
+            _markOrderFilled(bridgeMsg.orderId);
+        }
+    }
+
+    /// @notice Handle timeout of a previously dispatched request
+    function onPostRequestTimeout(PostRequest memory) external override {
+        require(msg.sender == ismpHandler, "Only ISMP host");
+        // Timeout handling: could revert order to Pending for retry
+    }
+
+    function onPostResponse(IncomingPostResponse memory) external override {
+        require(msg.sender == ismpHandler, "Only ISMP host");
+    }
+
+    function onPostResponseTimeout(PostResponse memory) external override {
+        require(msg.sender == ismpHandler, "Only ISMP host");
     }
 
     // ──────────────────────────── Views ────────────────────────────
@@ -166,19 +204,22 @@ contract IntentGateway is IIntentGateway, OrderStore, ReentrancyGuard, Pausable,
     // ──────────────────────────── Internal ────────────────────────────
 
     /// @notice Verify ZK BEEFY proof — simplified for hackathon
-    /// @dev In production: calls ISMP handler to verify Hyperbridge proof
+    /// @dev In production: calls ISMP host to verify Hyperbridge proof
     function _verifyProof(bytes32 orderId, bytes calldata proof) internal view {
-        // TODO: Real ISMP/Hyperbridge proof verification
-        // For now: accept non-empty proofs (hackathon placeholder)
         require(proof.length > 0, "Empty proof");
         // In production: IISMP(ismpHandler).verifyConsensus(proof, abi.encode(orderId));
     }
 
-    /// @notice Mark order as filled (called by settlement pipeline)
-    function markOrderFilled(bytes32 orderId) external {
-        // TODO: Access control — only callable by authorized settlement module
+    /// @notice Mark order as filled — only callable internally via onAccept or by this contract
+    function _markOrderFilled(bytes32 orderId) internal {
         OrderLib.Order storage order = _orders[orderId];
         require(order.status == OrderLib.OrderStatus.Pending, "Order not pending");
         order.status = OrderLib.OrderStatus.Filled;
+    }
+
+    /// @notice External mark filled — restricted to ISMP host (for backward compatibility)
+    function markOrderFilled(bytes32 orderId) external {
+        require(msg.sender == ismpHandler || msg.sender == address(this), "Unauthorized");
+        _markOrderFilled(orderId);
     }
 }

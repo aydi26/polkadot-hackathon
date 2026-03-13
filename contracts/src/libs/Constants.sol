@@ -24,8 +24,14 @@ library Constants {
     /// @notice Polkadot Asset Hub chain ID
     uint32 constant ASSET_HUB_CHAIN_ID = 1000;
 
-    /// @notice HyperEVM chain ID
+    /// @notice HyperEVM mainnet chain ID
     uint32 constant HYPEREVM_CHAIN_ID = 999;
+
+    /// @notice HyperEVM testnet chain ID
+    uint32 constant HYPEREVM_TESTNET_CHAIN_ID = 998;
+
+    /// @notice Arbitrum Sepolia testnet chain ID
+    uint32 constant ARBITRUM_SEPOLIA_CHAIN_ID = 421614;
 
     /// @notice Basis points denominator
     uint256 constant BPS_DENOMINATOR = 10_000;
