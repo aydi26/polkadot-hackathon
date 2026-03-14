@@ -1020,12 +1020,14 @@ export default function BridgeWidget() {
           <div className="bridge-send-card">
             <div className="bridge-send-header">
               <span className="bridge-send-label">Send</span>
-              <span style={{ fontSize: 12, color: "#636366" }}>
-                5.005005
-                <button className="bridge-send-max" onClick={handleMinAmount}>
-                  MIN
-                </button>
-              </span>
+              {isConnected && (
+                <span style={{ fontSize: 12, color: "#636366" }}>
+                  5.005005
+                  <button className="bridge-send-max" onClick={handleMinAmount}>
+                    MIN
+                  </button>
+                </span>
+              )}
             </div>
             <div className="bridge-send-body">
               <div className="bridge-badge small">
