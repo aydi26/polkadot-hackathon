@@ -18,28 +18,8 @@
   border-color: rgba(255, 255, 255, 0.12);
 }
 
-.hamburger-lines {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  width: 20px;
-}
-
-.hamburger-lines span {
-  display: block;
-  height: 2px;
-  width: 100%;
-  background: #fff;
-  border-radius: 1px;
-  transition: all 0.2s ease;
-}
-
-.hamburger-lines span:nth-child(2) {
-  width: 70%;
-}
-
-.staggered-menu-trigger:hover .hamburger-lines span:nth-child(2) {
-  width: 100%;
+.staggered-menu-trigger svg {
+  color: #fff;
 }
 
 /* ===== OVERLAY ===== */
@@ -71,37 +51,10 @@
   z-index: 1000;
   display: flex;
   flex-direction: column;
-  padding: 24px;
+  padding: 40px 24px 24px;
   transform: translateX(100%);
 }
 
-/* ===== CLOSE ===== */
-.staggered-menu-close {
-  width: 40px;
-  height: 40px;
-  border-radius: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(255, 255, 255, 0.04);
-  color: #8a8a8e;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  align-self: flex-end;
-  transition: all 0.15s ease;
-  margin-bottom: 24px;
-}
-
-.staggered-menu-close:hover {
-  background: rgba(255, 68, 68, 0.08);
-  color: #ff4444;
-  border-color: rgba(255, 68, 68, 0.15);
-}
-
-.staggered-menu-close svg {
-  width: 20px;
-  height: 20px;
-}
 
 /* ===== NAV ITEMS ===== */
 .staggered-menu-nav {

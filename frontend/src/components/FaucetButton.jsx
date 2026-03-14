@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useState, useRef, useCallback } from "react";
 import { useAccount, useWriteContract, useWaitForTransactionReceipt } from "wagmi";
 import { parseUnits } from "viem";
-import { USDC_ADDRESS, ERC20_ABI } from "../config/contracts";
+import { motion, useAnimation } from "motion/react";
+import { USDC_ADDRESS } from "../config/contracts";
 import "./FaucetButton.css";
 
 const MINT_ABI = [
@@ -17,7 +18,63 @@ const MINT_ABI = [
   },
 ];
 
-const MINT_AMOUNT = parseUnits("1000", 6); // 1000 USDC
+const MINT_AMOUNT = parseUnits("10", 6); // 10 USDC (demo cap)
+
+const DropletIcon = ({ size = 16 }) => {
+  const controls = useAnimation();
+
+  const handleMouseEnter = useCallback(() => {
+    controls.start("animate");
+  }, [controls]);
+
+  const handleMouseLeave = useCallback(() => {
+    controls.start("normal");
+  }, [controls]);
+
+  return (
+    <div
+      className="droplet-icon"
+      onMouseEnter={handleMouseEnter}
+      onMouseLeave={handleMouseLeave}
+    >
+      <svg
+        fill="none"
+        height={size}
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="2"
+        viewBox="0 0 24 24"
+        width={size}
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <motion.path
+          animate={controls}
+          d="M12 22a7 7 0 0 0 7-7c0-2-1-3.9-3-5.5s-3.5-4-4-6.5c-.5 2.5-2 4.9-4 6.5C6 11.1 5 13 5 15a7 7 0 0 0 7 7z"
+          transition={{ duration: 0.6, delay: 0.2 }}
+          variants={{
+            normal: {
+              pathLength: 1,
+              opacity: 1,
+              pathOffset: 0,
+            },
+            animate: {
+              pathLength: [0, 1],
+              opacity: [0, 1],
+              pathOffset: [1, 0],
+            },
+          }}
+        />
+      </svg>
+    </div>
+  );
+};
+
+const CheckIcon = () => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+    <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" />
+  </svg>
+);
 
 export default function FaucetButton() {
   const { address, isConnected } = useAccount();
@@ -67,16 +124,12 @@ export default function FaucetButton() {
         </>
       ) : justMinted ? (
         <>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" />
-          </svg>
-          +1000 USDC
+          <CheckIcon />
+          +10 USDC
         </>
       ) : (
         <>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z" />
-          </svg>
+          <DropletIcon size={16} />
           Faucet
         </>
       )}

@@ -20,9 +20,10 @@
 .app-content {
   position: relative;
   z-index: 1;
-  min-height: 100vh;
+  height: 100vh;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 /* ===== HEADER ===== */
@@ -30,13 +31,15 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 0 32px;
-  height: 72px;
-  gap: 16px;
+  padding: 0 2vw;
+  height: 8vh;
+  min-height: 52px;
+  gap: 1vw;
   background: rgba(0, 0, 0, 0.85);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  flex-shrink: 0;
 }
 
 .app-logo {
@@ -62,7 +65,7 @@
   color: #f0f0f0;
 }
 
-.app-logo-brace {
+.app-logo-accent {
   color: #FC007B;
   font-weight: 800;
 }
@@ -103,24 +106,27 @@
 .app-main {
   flex: 1;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
-  padding: 24px 16px;
+  padding-top: 2vh;
+  overflow: hidden;
 }
 
 .app-main.top-align {
   align-items: flex-start;
-  padding-top: 40px;
+  padding-top: 2vh;
+  overflow-y: auto;
 }
 
 /* ===== FOOTER ===== */
 .app-footer {
   text-align: center;
-  padding: 20px 24px;
+  padding: 5px 24px;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 12px;
+  flex-shrink: 0;
 }
 
 .app-footer-text {
@@ -135,8 +141,8 @@
 }
 
 .app-footer-social {
-  width: 44px;
-  height: 44px;
+  width: 36px;
+  height: 36px;
   border-radius: 50%;
   display: flex;
   align-items: center;

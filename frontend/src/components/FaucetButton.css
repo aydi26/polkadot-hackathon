@@ -53,3 +53,11 @@
 @keyframes faucet-spin {
   to { transform: rotate(360deg); }
 }
+
+/* Droplet icon wrapper */
+.droplet-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 0;
+}

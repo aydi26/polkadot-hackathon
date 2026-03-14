@@ -33,9 +33,9 @@ struct FillInstruction {
 }
 
 /// @notice ERC-7683 OnchainCrossChainOrder: user-submitted order on the origin chain.
-/// @dev Maps to IntentBridge's createOrder parameters packed into `orderData`.
+/// @dev Maps to Velora's createOrder parameters packed into `orderData`.
 /// @param fillDeadline Timestamp by which the order must be filled.
-/// @param orderDataType Application-specific type discriminator (0x01 for IntentBridge).
+/// @param orderDataType Application-specific type discriminator (0x01 for Velora).
 /// @param orderData ABI-encoded order parameters: (token, amount, destChain, destAddress, feeOffer).
 struct OnchainCrossChainOrder {
     uint32 fillDeadline;
@@ -44,7 +44,7 @@ struct OnchainCrossChainOrder {
 }
 
 /// @notice ERC-7683 GaslessCrossChainOrder: user signs off-chain, relayer submits on-chain.
-/// @dev IntentBridge does not currently support gasless orders; included for interface completeness.
+/// @dev Velora does not currently support gasless orders; included for interface completeness.
 /// @param originSettler Address of the origin settler that will process the order.
 /// @param user Address of the user who signed the order.
 /// @param nonce Replay-protection nonce.
@@ -145,11 +145,11 @@ interface IERC7683DestinationSettler {
 // ════════════════════════════════════════════════════════════════════════════════
 
 /// @title ERC7683OriginAdapter
-/// @author IntentBridge Team
+/// @author Velora Team
 /// @notice Wraps IntentGateway to provide an ERC-7683 IOriginSettler-compatible interface.
-/// @dev This adapter translates between the ERC-7683 standard order format and IntentBridge's
+/// @dev This adapter translates between the ERC-7683 standard order format and Velora's
 ///      native createOrder() function. It enables any ERC-7683 compatible solver/filler network
-///      to interact with the IntentBridge escrow system.
+///      to interact with the Velora escrow system.
 ///
 ///      ERC-7683 Mapping:
 ///        open()    -> IntentGateway.createOrder()
@@ -160,7 +160,7 @@ interface IERC7683DestinationSettler {
 contract ERC7683OriginAdapter is IERC7683OriginSettler {
     using SafeERC20 for IERC20;
 
-    /// @notice IntentBridge order data type identifier.
+    /// @notice Velora order data type identifier.
     uint32 public constant INTENT_BRIDGE_ORDER_TYPE = 0x01;
 
     /// @notice The underlying IntentGateway that holds escrow.
@@ -193,7 +193,7 @@ contract ERC7683OriginAdapter is IERC7683OriginSettler {
     function open(OnchainCrossChainOrder calldata order) external override {
         require(order.orderDataType == INTENT_BRIDGE_ORDER_TYPE, "ERC7683: unsupported order type");
 
-        // Decode IntentBridge-specific order parameters
+        // Decode Velora-specific order parameters
         (address token, uint256 amount, uint32 destChain, address destAddress, uint256 feeOffer) =
             abi.decode(order.orderData, (address, uint256, uint32, address, uint256));
 
@@ -214,7 +214,7 @@ contract ERC7683OriginAdapter is IERC7683OriginSettler {
     }
 
     /// @inheritdoc IERC7683OriginSettler
-    /// @notice Gasless orders are not supported in the current IntentBridge implementation.
+    /// @notice Gasless orders are not supported in the current Velora implementation.
     /// @dev Reverts unconditionally. Future versions may support EIP-712 signed gasless orders.
     function openFor(GaslessCrossChainOrder calldata, bytes calldata, bytes calldata) external pure override {
         revert("ERC7683: gasless orders not supported");
@@ -261,8 +261,8 @@ contract ERC7683OriginAdapter is IERC7683OriginSettler {
 
     // ──────────────────────────── Internal Helpers ────────────────────────────
 
-    /// @notice Builds a ResolvedCrossChainOrder from IntentBridge order parameters.
-    /// @dev Maps IntentBridge fields to ERC-7683 Output and FillInstruction structs:
+    /// @notice Builds a ResolvedCrossChainOrder from Velora order parameters.
+    /// @dev Maps Velora fields to ERC-7683 Output and FillInstruction structs:
     ///      - maxSpent[0]: what the filler pays on destination (amount - feeOffer)
     ///      - minReceived[0]: what the user receives on destination (amount - feeOffer)
     ///      - fillInstructions[0]: where and how to fill
@@ -322,7 +322,7 @@ contract ERC7683OriginAdapter is IERC7683OriginSettler {
 // ════════════════════════════════════════════════════════════════════════════════
 
 /// @title ERC7683DestinationAdapter
-/// @author IntentBridge Team
+/// @author Velora Team
 /// @notice Wraps IntentSettler to provide an ERC-7683 IDestinationSettler-compatible interface.
 /// @dev This adapter translates the ERC-7683 fill() call into IntentSettler's fillOrder().
 ///      Fillers calling fill() via this adapter get the same behavior as calling fillOrder()

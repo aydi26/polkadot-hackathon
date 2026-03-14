@@ -41,6 +41,7 @@ export class CrossChainRelay {
   private destConfig: DestChainConfig;
   private relayedOrders: Set<string> = new Set();
   private running = false;
+  private lastBlock: number = 0;
 
   constructor(state: FillerState, destConfig: DestChainConfig) {
     this.state = state;
@@ -59,20 +60,44 @@ export class CrossChainRelay {
   async start(): Promise<void> {
     this.running = true;
     console.log(`[Relay:${this.destConfig.chainId}] Cross-chain relay started for ${this.destConfig.name}`);
-    console.log(`[Relay:${this.destConfig.chainId}] Watching for OrderFilled events...`);
+    console.log(`[Relay:${this.destConfig.chainId}] Watching for OrderFilled events (polling)...`);
 
-    this.settler.on(
-      "OrderFilled",
-      async (orderId: string, filler: string, recipient: string, token: string, amount: bigint) => {
-        if (this.relayedOrders.has(orderId)) return;
-        this.relayedOrders.add(orderId);
+    this.lastBlock = await this.destProvider.getBlockNumber();
+    this.pollLoop();
+  }
 
-        console.log(`[Relay:${this.destConfig.chainId}] OrderFilled detected: ${orderId.slice(0, 10)}...`);
-        console.log(`[Relay:${this.destConfig.chainId}]   Filler: ${filler}, Amount: ${ethers.formatUnits(amount, 6)} USDC`);
+  /** Poll for OrderFilled events instead of using .on() to avoid RPC rate-limit crashes */
+  private async pollLoop(): Promise<void> {
+    while (this.running) {
+      try {
+        const currentBlock = await this.destProvider.getBlockNumber();
+        if (currentBlock > this.lastBlock) {
+          const events = await this.settler.queryFilter("OrderFilled", this.lastBlock + 1, currentBlock);
 
-        await this.relayFillConfirmation(orderId);
+          for (const event of events) {
+            const log = event as ethers.EventLog;
+            const orderId = log.args[0] as string;
+
+            if (this.relayedOrders.has(orderId)) continue;
+            this.relayedOrders.add(orderId);
+
+            const filler = log.args[1] as string;
+            const amount = log.args[4] as bigint;
+
+            console.log(`[Relay:${this.destConfig.chainId}] OrderFilled detected: ${orderId.slice(0, 10)}...`);
+            console.log(`[Relay:${this.destConfig.chainId}]   Filler: ${filler}, Amount: ${ethers.formatUnits(amount, 6)} USDC`);
+
+            await this.relayFillConfirmation(orderId);
+          }
+
+          this.lastBlock = currentBlock;
+        }
+      } catch (err) {
+        console.error(`[Relay:${this.destConfig.chainId}] Poll error:`, err);
       }
-    );
+
+      await sleep(10000); // Poll every 10s to avoid rate limits
+    }
   }
 
   /** Relay FILL_CONFIRMATION: call markOrderFilled on source chain */
@@ -97,7 +122,10 @@ export class CrossChainRelay {
 
   async stop(): Promise<void> {
     this.running = false;
-    this.settler.removeAllListeners();
     console.log(`[Relay:${this.destConfig.chainId}] Stopped.`);
   }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

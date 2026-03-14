@@ -61,14 +61,7 @@ export class SettlementMonitor {
     console.log(`[Settler:${this.destConfig.chainId}] Monitoring pending settlements for ${this.destConfig.name}...`);
     console.log(`[Settler:${this.destConfig.chainId}] Settlement mode: ${mode}, delay: ${settleDelay}ms`);
 
-    // Listen for settlement events
-    this.settler.on("SettlementVerified", (orderId: string, filler: string, proofHash: string) => {
-      console.log(`[Settler:${this.destConfig.chainId}] Settlement verified: ${orderId}`);
-      this.state.markSettled(orderId, proofHash);
-      this.settledOrders.add(orderId);
-    });
-
-    // Start the auto-settlement loop
+    // Start the auto-settlement loop (polling-based to avoid RPC rate-limit crashes)
     this.autoSettleLoop();
   }
 
@@ -99,7 +92,7 @@ export class SettlementMonitor {
         console.error(`[Settler:${this.destConfig.chainId}] Poll error:`, err);
       }
 
-      await sleep(config.pollInterval * 3); // Check every ~6s
+      await sleep(15000); // Check every 15s to avoid RPC rate limits
     }
   }
 

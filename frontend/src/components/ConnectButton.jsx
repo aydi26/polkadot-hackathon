@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { useAccount, useConnect, useDisconnect, useChainId, useSwitchChain } from "wagmi";
 import { polkadotHubTestnet } from "../config/wagmi";
-import polkaLogo from "../assets svg/logo polka.svg";
 import "./ConnectButton.css";
 
 const SUPPORTED_CHAIN_ID = polkadotHubTestnet.id; // 420420417
@@ -14,7 +13,6 @@ export default function ConnectButton() {
   const { switchChain } = useSwitchChain();
   const [showWalletPicker, setShowWalletPicker] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
-  const [showChainMenu, setShowChainMenu] = useState(false);
   const [isManualConnect, setIsManualConnect] = useState(false);
   const hasShownConfirm = useRef(false);
 
@@ -55,11 +53,6 @@ export default function ConnectButton() {
     setShowWalletPicker(false);
   };
 
-  const handleSwitchChain = () => {
-    switchChain({ chainId: polkadotHubTestnet.id });
-    setShowChainMenu(false);
-  };
-
   if (isPending) {
     return (
       <div className="connect-wrapper">
@@ -82,43 +75,6 @@ export default function ConnectButton() {
     return (
       <div className="connect-wrapper">
         <div className="connect-connected">
-          {/* Chain indicator */}
-          <div className="connect-chain-wrapper">
-            <button
-              className={`connect-chain-btn ${isWrongChain ? "wrong" : ""}`}
-              onClick={() => setShowChainMenu(!showChainMenu)}
-            >
-              <img src={polkaLogo} alt="Polkadot" className="connect-chain-icon" />
-              <svg
-                className={`connect-chain-chevron ${showChainMenu ? "open" : ""}`}
-                width="12" height="12" viewBox="0 0 24 24" fill="currentColor"
-              >
-                <path d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6z" />
-              </svg>
-            </button>
-            {showChainMenu && (
-              <>
-                <div className="wallet-picker-overlay" onClick={() => setShowChainMenu(false)} />
-                <div className="connect-chain-menu">
-                  <div className="connect-chain-menu-title">Network</div>
-                  <button
-                    className={`connect-chain-option ${!isWrongChain ? "active" : ""}`}
-                    onClick={handleSwitchChain}
-                  >
-                    <img src={polkaLogo} alt="Polkadot" className="connect-chain-option-icon" />
-                    <span>Polkadot Hub Testnet</span>
-                    {!isWrongChain && <span className="connect-chain-check">&#10003;</span>}
-                  </button>
-                  {isWrongChain && (
-                    <div className="connect-chain-warning">
-                      Wrong network. Switch to Polkadot Hub Testnet.
-                    </div>
-                  )}
-                </div>
-              </>
-            )}
-          </div>
-
           <div className="connect-address">
             <div className={`connect-dot ${isWrongChain ? "wrong" : ""}`} />
             <span className="connect-addr-text">

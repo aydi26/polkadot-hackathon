@@ -44,9 +44,10 @@ contract AccessControlTest is Test {
         gateway.markOrderFilled(keccak256("order"));
     }
 
-    function test_markOrderFilled_revert_fromNonIsmpHost() public {
-        vm.prank(owner); // even owner can't call it
-        vm.expectRevert("Unauthorized");
+    function test_markOrderFilled_owner_isRelayer() public {
+        // Owner is default relayer, so auth passes but order doesn't exist → "Order not pending"
+        vm.prank(owner);
+        vm.expectRevert("Order not pending");
         gateway.markOrderFilled(keccak256("order"));
     }
 
