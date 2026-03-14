@@ -8,7 +8,7 @@ import { CrossChainRelay } from "./relay.js";
 import { ethers } from "ethers";
 
 async function main() {
-  console.log("=== IntentBridge Filler Service (Multi-Destination) ===");
+  console.log("=== Velora Filler Service (Multi-Destination) ===");
   console.log();
 
   // Validate config

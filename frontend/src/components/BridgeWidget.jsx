@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import {
   useAccount,
   useConnect,
@@ -25,9 +25,11 @@ import {
   SOURCE_CHAIN_ID,
   DEST_CHAIN_ID,
   OrderStatus,
+  ORDER_STATUS_LABELS,
   HL_BRIDGE_ADDRESS,
 } from "../config/contracts";
 import ElasticSlider from "./ElasticSlider";
+import polkadotDotLogo from "../assets svg/polkadot-new-dot-logo.svg";
 import "./BridgeWidget.css";
 
 /* ===== SVG ICONS ===== */
@@ -41,15 +43,18 @@ const UsdcLogo = ({ size = 40 }) => (
 );
 
 const PolkadotLogo = ({ size = 18 }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-    <circle cx="12" cy="12" r="12" fill="#E6007A"/>
-    <circle cx="12" cy="5.5" r="2.5" fill="white"/>
-    <circle cx="12" cy="18.5" r="2.5" fill="white"/>
-    <circle cx="6.5" cy="8.5" r="2" fill="white"/>
-    <circle cx="17.5" cy="8.5" r="2" fill="white"/>
-    <circle cx="6.5" cy="15.5" r="2" fill="white"/>
-    <circle cx="17.5" cy="15.5" r="2" fill="white"/>
-  </svg>
+  <div style={{
+    width: size,
+    height: size,
+    borderRadius: "50%",
+    background: "#fff",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
+  }}>
+    <img src={polkadotDotLogo} alt="Polkadot" width={size * 0.65} height={size * 0.65} />
+  </div>
 );
 
 const HyperliquidLogo = ({ size = 18 }) => (
@@ -91,6 +96,45 @@ const WalletIcon = () => (
   </svg>
 );
 
+/* ===== COPY BUTTON ===== */
+const CopyButton = ({ text }) => {
+  const [copied, setCopied] = useState(false);
+  const handleCopy = useCallback(() => {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  }, [text]);
+  return (
+    <button
+      onClick={handleCopy}
+      title={copied ? "Copied!" : "Copy to clipboard"}
+      style={{
+        background: copied ? "rgba(76,175,80,0.15)" : "rgba(255,255,255,0.06)",
+        border: copied ? "1px solid rgba(76,175,80,0.3)" : "1px solid rgba(255,255,255,0.1)",
+        color: copied ? "#4CAF50" : "#8a8a8e",
+        borderRadius: 6,
+        padding: "3px 6px",
+        cursor: "pointer",
+        display: "flex",
+        alignItems: "center",
+        transition: "all 0.15s ease",
+      }}
+    >
+      {copied ? (
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+          <polyline points="20 6 9 17 4 12" />
+        </svg>
+      ) : (
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+        </svg>
+      )}
+    </button>
+  );
+};
+
 /* ===== STEPS ===== */
 const STEPS_INSTANT = [
   { key: "approve", label: "Approve USDC" },
@@ -129,10 +173,17 @@ export default function BridgeWidget() {
   const [selectedDestChain, setSelectedDestChain] = useState(DEST_CHAIN_ID);
   const [showDestPicker, setShowDestPicker] = useState(false);
 
+  // Track tab state
+  const [trackInput, setTrackInput] = useState("");
+  const [trackedOrder, setTrackedOrder] = useState(null);
+  const [trackedFill, setTrackedFill] = useState(null);
+  const [isTracking, setIsTracking] = useState(false);
+  const [trackError, setTrackError] = useState("");
+
   // Derived destination config
   const destChainConfig = DEST_CHAINS[selectedDestChain] || DEST_CHAINS[421614];
-  const destChainObj = arbitrumSepolia;
-  const DestLogo = ArbitrumLogo;
+  const destChainObj = arbitrumSepolia; // underlying chain for RPC
+  const DestLogo = HyperliquidLogo;
 
   // Auto-fill destination with connected address
   useEffect(() => {
@@ -145,6 +196,15 @@ export default function BridgeWidget() {
     abi: ERC20_ABI,
     functionName: "balanceOf",
     args: address ? [address] : undefined,
+    query: { enabled: !!address },
+  });
+
+  // Read USDC allowance for gateway
+  const { data: usdcAllowance, refetch: refetchAllowance } = useReadContract({
+    address: USDC_ADDRESS,
+    abi: ERC20_ABI,
+    functionName: "allowance",
+    args: address ? [address, INTENT_GATEWAY_ADDRESS] : undefined,
     query: { enabled: !!address },
   });
 
@@ -172,13 +232,60 @@ export default function BridgeWidget() {
     reset: resetDepositHL,
   } = useWriteContract();
 
-  // Wait for receipts
-  const { isSuccess: approveConfirmed, isError: approveReverted } =
-    useWaitForTransactionReceipt({ hash: approveTxHash });
-  const { data: createReceipt, isSuccess: createConfirmed, isError: createReverted } =
-    useWaitForTransactionReceipt({ hash: createTxHash });
+  // Wait for deposit HL receipt (Arb Sepolia — fast RPC, wagmi default is fine)
   const { isSuccess: depositHLConfirmed, isError: depositHLReverted } =
     useWaitForTransactionReceipt({ hash: depositHLTxHash });
+
+  // Manual fast polling for source chain tx receipts (Polkadot Hub RPC is slow)
+  const [approveConfirmed, setApproveConfirmed] = useState(false);
+  const [approveReverted, setApproveReverted] = useState(false);
+  const [createConfirmed, setCreateConfirmed] = useState(false);
+  const [createReverted, setCreateReverted] = useState(false);
+  const [createReceipt, setCreateReceipt] = useState(null);
+
+  useEffect(() => {
+    if (!approveTxHash) return;
+    let cancelled = false;
+    const poll = async () => {
+      const { createPublicClient, http } = await import("viem");
+      const client = createPublicClient({ chain: polkadotHubTestnet, transport: http("https://eth-rpc-testnet.polkadot.io/") });
+      while (!cancelled) {
+        try {
+          const receipt = await client.getTransactionReceipt({ hash: approveTxHash });
+          if (receipt) {
+            if (receipt.status === "success") setApproveConfirmed(true);
+            else setApproveReverted(true);
+            return;
+          }
+        } catch {}
+        await new Promise((r) => setTimeout(r, 1500));
+      }
+    };
+    poll();
+    return () => { cancelled = true; };
+  }, [approveTxHash]);
+
+  useEffect(() => {
+    if (!createTxHash) return;
+    let cancelled = false;
+    const poll = async () => {
+      const { createPublicClient, http } = await import("viem");
+      const client = createPublicClient({ chain: polkadotHubTestnet, transport: http("https://eth-rpc-testnet.polkadot.io/") });
+      while (!cancelled) {
+        try {
+          const receipt = await client.getTransactionReceipt({ hash: createTxHash });
+          if (receipt) {
+            if (receipt.status === "success") { setCreateReceipt(receipt); setCreateConfirmed(true); }
+            else setCreateReverted(true);
+            return;
+          }
+        } catch {}
+        await new Promise((r) => setTimeout(r, 1500));
+      }
+    };
+    poll();
+    return () => { cancelled = true; };
+  }, [createTxHash]);
 
   // Track orderId from createOrder tx logs
   const [orderId, setOrderId] = useState(null);
@@ -210,7 +317,7 @@ export default function BridgeWidget() {
       });
       setStep("creating");
     }
-  }, [approveConfirmed]);
+  }, [approveConfirmed, step]);
 
   // After order creation confirms — extract orderId from logs
   useEffect(() => {
@@ -227,7 +334,7 @@ export default function BridgeWidget() {
       }
       setStep(bridgeMode === "instant" ? "waiting_fill" : "waiting_fallback");
     }
-  }, [createConfirmed]);
+  }, [createConfirmed, step]);
 
   // Poll order status on source chain (getOrder) and destination chain (getFill)
   useEffect(() => {
@@ -282,6 +389,121 @@ export default function BridgeWidget() {
     return () => clearInterval(interval);
   }, [orderId, step]);
 
+  // ──── Track Order ────
+  const handleTrack = useCallback(async () => {
+    const id = trackInput.trim();
+    if (!/^0x[0-9a-fA-F]{64}$/.test(id)) {
+      setTrackError("Invalid Order ID (must be 0x + 64 hex chars)");
+      return;
+    }
+    setTrackError("");
+    setTrackedOrder(null);
+    setTrackedFill(null);
+    setIsTracking(true);
+
+    try {
+      const { createPublicClient, http } = await import("viem");
+      const sourceClient = createPublicClient({
+        chain: polkadotHubTestnet,
+        transport: http("https://eth-rpc-testnet.polkadot.io/"),
+      });
+      const order = await sourceClient.readContract({
+        address: INTENT_GATEWAY_ADDRESS,
+        abi: INTENT_GATEWAY_ABI,
+        functionName: "getOrder",
+        args: [id],
+      });
+
+      if (Number(order.status) === OrderStatus.None) {
+        setTrackError("Order not found");
+        setIsTracking(false);
+        return;
+      }
+      setTrackedOrder(order);
+
+      try {
+        const destClient = createPublicClient({
+          chain: destChainObj,
+          transport: http(destChainConfig.rpc),
+        });
+        const fill = await destClient.readContract({
+          address: destChainConfig.settlerAddress,
+          abi: INTENT_SETTLER_ABI,
+          functionName: "getFill",
+          args: [id],
+        });
+        setTrackedFill(fill);
+      } catch (_) {
+        // fill may not exist yet
+      }
+    } catch (err) {
+      console.error("[Track] Error:", err);
+      setTrackError("Failed to fetch order");
+      setIsTracking(false);
+    }
+  }, [trackInput, destChainConfig, destChainObj]);
+
+  const handleStopTracking = useCallback(() => {
+    setIsTracking(false);
+    setTrackedOrder(null);
+    setTrackedFill(null);
+    setTrackInput("");
+    setTrackError("");
+  }, []);
+
+  // Poll tracked order
+  useEffect(() => {
+    if (!isTracking || !trackInput) return;
+    const id = trackInput.trim();
+
+    const TERMINAL = [OrderStatus.Settled, OrderStatus.Expired, OrderStatus.Cancelled, OrderStatus.Fallback];
+    if (trackedOrder && TERMINAL.includes(Number(trackedOrder.status))) return;
+
+    const interval = setInterval(async () => {
+      try {
+        const { createPublicClient, http } = await import("viem");
+        const sourceClient = createPublicClient({
+          chain: polkadotHubTestnet,
+          transport: http("https://eth-rpc-testnet.polkadot.io/"),
+        });
+        const order = await sourceClient.readContract({
+          address: INTENT_GATEWAY_ADDRESS,
+          abi: INTENT_GATEWAY_ABI,
+          functionName: "getOrder",
+          args: [id],
+        });
+        setTrackedOrder(order);
+
+        try {
+          const destClient = createPublicClient({
+            chain: destChainObj,
+            transport: http(destChainConfig.rpc),
+          });
+          const fill = await destClient.readContract({
+            address: destChainConfig.settlerAddress,
+            abi: INTENT_SETTLER_ABI,
+            functionName: "getFill",
+            args: [id],
+          });
+          setTrackedFill(fill);
+        } catch (_) {}
+      } catch (err) {
+        console.error("[Track Poll] Error:", err);
+      }
+    }, 5000);
+
+    return () => clearInterval(interval);
+  }, [isTracking, trackInput, trackedOrder?.status, destChainConfig, destChainObj]);
+
+  // Debug logging
+  useEffect(() => {
+    console.log("[Bridge] step:", step, "approveTxHash:", approveTxHash, "approveConfirmed:", approveConfirmed, "approveError:", approveError?.message?.slice(0, 80));
+  }, [step, approveTxHash, approveConfirmed, approveError]);
+
+  useEffect(() => {
+    console.log("[Bridge] createTxHash:", createTxHash, "createConfirmed:", createConfirmed, "createError:", createError?.message?.slice(0, 80));
+  }, [createTxHash, createConfirmed, createError]);
+
   // Handle errors
   useEffect(() => {
     if (approveError && step === "approving") {
@@ -289,7 +511,7 @@ export default function BridgeWidget() {
       setFailedAt("approve");
       setStep("failed");
     }
-  }, [approveError]);
+  }, [approveError, step]);
 
   useEffect(() => {
     if (createError && step === "creating") {
@@ -297,7 +519,7 @@ export default function BridgeWidget() {
       setFailedAt("create");
       setStep("failed");
     }
-  }, [createError]);
+  }, [createError, step]);
 
   useEffect(() => {
     if (approveReverted && step === "approving") {
@@ -305,7 +527,7 @@ export default function BridgeWidget() {
       setFailedAt("approve");
       setStep("failed");
     }
-  }, [approveReverted]);
+  }, [approveReverted, step]);
 
   useEffect(() => {
     if (createReverted && step === "creating") {
@@ -313,25 +535,51 @@ export default function BridgeWidget() {
       setFailedAt("create");
       setStep("failed");
     }
-  }, [createReverted]);
+  }, [createReverted, step]);
 
-  // Auto-deposit to Hyperliquid: switch to Arb Sepolia then transfer USDC2 to HL bridge
+  // Auto-deposit to Hyperliquid
   const [depositHLTriggered, setDepositHLTriggered] = useState(false);
+
+  // Step 1: auto-switch chain when entering depositing_hl
   useEffect(() => {
     if (step !== "depositing_hl" || depositHLTriggered) return;
-    // Switch chain to Arbitrum Sepolia if needed
     if (chainId !== arbitrumSepolia.id) {
       switchChain({ chainId: arbitrumSepolia.id });
-      return; // will re-run when chainId changes
     }
+  }, [step, depositHLTriggered, chainId]);
+
+  // Step 2: auto-send deposit once on correct chain
+  useEffect(() => {
+    if (step !== "depositing_hl" || depositHLTriggered) return;
+    if (chainId !== arbitrumSepolia.id) return;
     setDepositHLTriggered(true);
-    depositHL({
-      address: destChainConfig.usdcAddress,
-      abi: ERC20_ABI,
-      functionName: "transfer",
-      args: [HL_BRIDGE_ADDRESS, receiveAmount],
-    });
-  }, [step, chainId, depositHLTriggered]);
+
+    (async () => {
+      try {
+        const { createPublicClient, http } = await import("viem");
+        const arbClient = createPublicClient({
+          chain: arbitrumSepolia,
+          transport: http(destChainConfig.rpc),
+        });
+        const gasPrice = await arbClient.getGasPrice();
+
+        depositHL({
+          address: destChainConfig.usdcAddress,
+          abi: ERC20_ABI,
+          functionName: "transfer",
+          args: [HL_BRIDGE_ADDRESS, receiveAmount],
+          gasPrice: gasPrice * 2n,
+        });
+      } catch {
+        depositHL({
+          address: destChainConfig.usdcAddress,
+          abi: ERC20_ABI,
+          functionName: "transfer",
+          args: [HL_BRIDGE_ADDRESS, receiveAmount],
+        });
+      }
+    })();
+  }, [step, depositHLTriggered, chainId]);
 
   // Deposit HL confirmed → completed
   useEffect(() => {
@@ -363,6 +611,26 @@ export default function BridgeWidget() {
     setFailedAt(null);
     resetApprove();
     resetCreate();
+
+    // Skip approve if allowance already sufficient
+    if (usdcAllowance !== undefined && usdcAllowance >= amountWei) {
+      createOrder({
+        address: INTENT_GATEWAY_ADDRESS,
+        abi: INTENT_GATEWAY_ABI,
+        functionName: "createOrder",
+        args: [
+          USDC_ADDRESS,
+          amountWei,
+          selectedDestChain,
+          destAddress || address,
+          feeAmount,
+          deadline,
+        ],
+      });
+      setStep("creating");
+      return;
+    }
+
     approve({
       address: USDC_ADDRESS,
       abi: ERC20_ABI,
@@ -381,9 +649,16 @@ export default function BridgeWidget() {
     resetApprove();
     resetCreate();
     resetDepositHL();
+    setApproveConfirmed(false);
+    setApproveReverted(false);
+    setCreateConfirmed(false);
+    setCreateReverted(false);
+    setCreateReceipt(null);
     refetchBalance();
+    refetchAllowance();
   };
 
+  const handleMinAmount = () => setAmount("5.005005");
   const handleMaxAmount = () => {
     if (usdcBalance) setAmount(formatUnits(usdcBalance, 6));
   };
@@ -407,8 +682,10 @@ export default function BridgeWidget() {
       };
     if (!amount || parseFloat(amount) === 0)
       return { text: "Enter an amount", disabled: true, variant: "secondary" };
-    if (parseFloat(amount) < 1)
-      return { text: "Minimum 1 USDC", disabled: true, variant: "secondary" };
+    if (parseFloat(amount) < 5.005005)
+      return { text: "Minimum 5.005005 USDC", disabled: true, variant: "secondary" };
+    if (parseFloat(amount) > 10)
+      return { text: "Demo capped at 10 USDC", disabled: true, variant: "secondary", alert: "For the purposes of this demo, the bridge is capped at 10 USDC, but it works with more." };
     if (usdcBalance !== undefined && parseUnits(amount || "0", 6) > usdcBalance)
       return { text: "Insufficient USDC balance", disabled: true, variant: "secondary" };
     return {
@@ -490,7 +767,8 @@ export default function BridgeWidget() {
                           {step === "waiting_fallback" &&
                             `Classic pipeline (~${Math.ceil(FILLER_WINDOW / 60 + 6)} min)...`}
                           {step === "settling" && (destChainConfig.settlementMode === "tee" ? "TEE (Phala) settlement..." : "ZK BEEFY settlement...")}
-                          {step === "depositing_hl" && "Depositing to Hyperliquid..."}
+                          {step === "depositing_hl" && !depositHLTriggered && "Switching chain..."}
+                          {step === "depositing_hl" && depositHLTriggered && "Depositing to Hyperliquid..."}
                         </div>
                       )}
                     </div>
@@ -519,6 +797,7 @@ export default function BridgeWidget() {
                 </span>
               </div>
             </div>
+
           </div>
         </div>
       </div>
@@ -555,8 +834,8 @@ export default function BridgeWidget() {
             <div className="bridge-result-title">Bridge Complete</div>
             <div className="bridge-result-subtitle">
               {bridgeMode === "instant"
-                ? "Your USDC has been deposited to Hyperliquid via the official bridge."
-                : "Your USDC has been deposited to Hyperliquid via the classic trustless pipeline."}
+                ? "Your USDC has been deposited to Hyperliquid Testnet via the official bridge."
+                : "Your USDC has been deposited to Hyperliquid Testnet via the classic trustless pipeline."}
             </div>
             <div className="bridge-result-details">
               <div className="bridge-result-row">
@@ -571,6 +850,45 @@ export default function BridgeWidget() {
                 <span className="label">Mode</span>
                 <span className="value">{bridgeMode === "instant" ? "Instant" : "Classic"}</span>
               </div>
+              {orderId && (
+                <div className="bridge-result-row">
+                  <span className="label">Order ID</span>
+                  <span className="value" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <span style={{ fontSize: 12, fontFamily: "monospace" }}>
+                      {orderId.slice(0, 10)}...{orderId.slice(-8)}
+                    </span>
+                    <CopyButton text={orderId} />
+                  </span>
+                </div>
+              )}
+              {createTxHash && (
+                <div className="bridge-result-row">
+                  <span className="label">Order TX</span>
+                  <a
+                    href={`https://blockscout-testnet.polkadot.io/tx/${createTxHash}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="value"
+                    style={{ color: "#FC007B", textDecoration: "underline", fontSize: 12 }}
+                  >
+                    {createTxHash.slice(0, 10)}...{createTxHash.slice(-8)}
+                  </a>
+                </div>
+              )}
+              {depositHLTxHash && (
+                <div className="bridge-result-row">
+                  <span className="label">Deposit TX</span>
+                  <a
+                    href={`https://sepolia.arbiscan.io/tx/${depositHLTxHash}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="value"
+                    style={{ color: "#FC007B", textDecoration: "underline", fontSize: 12 }}
+                  >
+                    {depositHLTxHash.slice(0, 10)}...{depositHLTxHash.slice(-8)}
+                  </a>
+                </div>
+              )}
             </div>
             <div className="bridge-result-actions">
               <button className="bridge-btn primary" onClick={handleReset}>
@@ -681,13 +999,9 @@ export default function BridgeWidget() {
             </div>
           </div>
 
-          {/* TO card — with destination chain selector */}
-          <div className="bridge-card bridge-card-dest" style={{ position: "relative" }}>
-            <div
-              className="bridge-card-content"
-              onClick={() => setShowDestPicker(!showDestPicker)}
-              style={{ cursor: "pointer" }}
-            >
+          {/* TO card */}
+          <div className="bridge-card bridge-card-dest">
+            <div className="bridge-card-content">
               <div className="bridge-card-label">To</div>
               <div className="bridge-card-header">
                 <div className="bridge-badge">
@@ -698,35 +1012,20 @@ export default function BridgeWidget() {
                   <span className="bridge-card-title">USDC</span>
                   <span className="bridge-card-subtitle">{destChainConfig.shortName}</span>
                 </div>
-                <div className="bridge-card-chevron">
-                  <ChevronDownIcon size={12} />
-                </div>
               </div>
             </div>
-            {showDestPicker && (
-              <div className="bridge-dest-picker">
-                {Object.values(DEST_CHAINS).map((chain) => (
-                  <button
-                    key={chain.id}
-                    className={`bridge-dest-option ${chain.id === selectedDestChain ? "active" : ""}`}
-                    onClick={() => {
-                      setSelectedDestChain(chain.id);
-                      setShowDestPicker(false);
-                    }}
-                  >
-                    <ArbitrumLogo size={20} />
-                    <span className="bridge-dest-option-name">{chain.name}{chain.finalDestination ? ` → ${chain.finalDestination}` : ""}</span>
-                    {chain.id === selectedDestChain && <span className="bridge-dest-check">{"\u2713"}</span>}
-                  </button>
-                ))}
-              </div>
-            )}
           </div>
 
           {/* Send card (amount input) */}
           <div className="bridge-send-card">
             <div className="bridge-send-header">
               <span className="bridge-send-label">Send</span>
+              <span style={{ fontSize: 12, color: "#636366" }}>
+                5.005005
+                <button className="bridge-send-max" onClick={handleMinAmount}>
+                  MIN
+                </button>
+              </span>
             </div>
             <div className="bridge-send-body">
               <div className="bridge-badge small">
@@ -809,7 +1108,7 @@ export default function BridgeWidget() {
                 <div className="bridge-route-path-header">
                   <div className="bridge-route-path-left">
                     <div className="bridge-route-path-dot" />
-                    <span className="bridge-route-path-name">IntentBridge</span>
+                    <span className="bridge-route-path-name">Velora</span>
                   </div>
                   <span className="bridge-route-path-tag">
                     {bridgeMode === "instant" ? "INSTANT" : "CLASSIC"}
@@ -840,6 +1139,22 @@ export default function BridgeWidget() {
             </div>
           )}
 
+          {/* Demo cap alert */}
+          {buttonConfig.alert && (
+            <div style={{
+              background: "rgba(252,0,123,0.08)",
+              border: "1px solid rgba(252,0,123,0.2)",
+              borderRadius: 10,
+              padding: "10px 14px",
+              fontSize: 13,
+              color: "#FC007B",
+              lineHeight: 1.4,
+              textAlign: "center",
+            }}>
+              {buttonConfig.alert}
+            </div>
+          )}
+
           {/* Actions */}
           <div className="bridge-actions">
             <button
@@ -862,20 +1177,102 @@ export default function BridgeWidget() {
         /* ========== TRACK TAB ========== */
         <div className="status-panel">
           <div className="status-panel-title">Track Order</div>
-          <div className="status-mode-row">
-            <button className="status-mode-btn active">By Order ID</button>
-            <button className="status-mode-btn">By Tx Hash</button>
-          </div>
-          <div className="status-input-row">
-            <input
-              type="text"
-              className="status-input"
-              placeholder="Enter order ID (0x...)"
-            />
-            <button className="status-track-btn" disabled>
-              Track
-            </button>
-          </div>
+
+          {!isTracking ? (
+            <>
+              <div className="status-input-row">
+                <input
+                  type="text"
+                  className="status-input"
+                  placeholder="Enter order ID (0x...)"
+                  value={trackInput}
+                  onChange={(e) => { setTrackInput(e.target.value); setTrackError(""); }}
+                  onKeyDown={(e) => e.key === "Enter" && handleTrack()}
+                />
+                <button
+                  className="status-track-btn"
+                  disabled={!trackInput || trackInput.length < 10}
+                  onClick={handleTrack}
+                >
+                  Track
+                </button>
+              </div>
+              {trackError && <div className="track-error">{trackError}</div>}
+            </>
+          ) : (
+            <div className="track-results">
+              <div
+                className="track-status-badge"
+                data-status={ORDER_STATUS_LABELS[Number(trackedOrder?.status)]?.toLowerCase()}
+              >
+                {ORDER_STATUS_LABELS[Number(trackedOrder?.status)] || "Loading..."}
+              </div>
+
+              {trackedOrder && (
+                <div className="track-details">
+                  <div className="track-row">
+                    <span className="label">Amount</span>
+                    <span className="value">{formatUnits(trackedOrder.amount, 6)} USDC</span>
+                  </div>
+                  <div className="track-row">
+                    <span className="label">Fee</span>
+                    <span className="value">{formatUnits(trackedOrder.feeOffer, 6)} USDC</span>
+                  </div>
+                  <div className="track-row">
+                    <span className="label">Sender</span>
+                    <span className="value mono">
+                      {trackedOrder.user?.slice(0, 8)}...{trackedOrder.user?.slice(-6)}
+                    </span>
+                  </div>
+                  <div className="track-row">
+                    <span className="label">Recipient</span>
+                    <span className="value mono">
+                      {trackedOrder.destAddress?.slice(0, 8)}...{trackedOrder.destAddress?.slice(-6)}
+                    </span>
+                  </div>
+                  <div className="track-row">
+                    <span className="label">Created</span>
+                    <span className="value">
+                      {new Date(Number(trackedOrder.createdAt) * 1000).toLocaleString()}
+                    </span>
+                  </div>
+                  <div className="track-row">
+                    <span className="label">Deadline</span>
+                    <span className="value">
+                      {new Date(Number(trackedOrder.deadline) * 1000).toLocaleString()}
+                    </span>
+                  </div>
+                </div>
+              )}
+
+              {trackedFill && trackedFill.fillTimestamp > 0n && (
+                <div className="track-details" style={{ marginTop: 10 }}>
+                  <div className="track-row">
+                    <span className="label">Filled by</span>
+                    <span className="value mono">
+                      {trackedFill.filler?.slice(0, 8)}...{trackedFill.filler?.slice(-6)}
+                    </span>
+                  </div>
+                  <div className="track-row">
+                    <span className="label">Fill time</span>
+                    <span className="value">
+                      {new Date(Number(trackedFill.fillTimestamp) * 1000).toLocaleString()}
+                    </span>
+                  </div>
+                  <div className="track-row">
+                    <span className="label">Settled</span>
+                    <span className="value">
+                      {trackedFill.settled ? "Yes" : "Pending..."}
+                    </span>
+                  </div>
+                </div>
+              )}
+
+              <button className="track-back-btn" onClick={handleStopTracking}>
+                ← New Search
+              </button>
+            </div>
+          )}
         </div>
       )}
     </div>

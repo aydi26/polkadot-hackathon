@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "WebSearch"
+      "WebSearch",
+      "Bash(cd /c/Users/adria/polkadot-hackathon/frontend && npm run build 2>&1 | tail -5)"
     ]
   }
 }

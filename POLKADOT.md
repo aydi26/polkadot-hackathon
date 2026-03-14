@@ -1,4 +1,4 @@
-# IntentBridge — Intent-Based Cross-Chain Bridge Polkadot → Arbitrum Sepolia → Hyperliquid avec Settlement Trustless
+# Velora — Intent-Based Cross-Chain Bridge Polkadot → Arbitrum Sepolia → Hyperliquid avec Settlement Trustless
 
 ## TL;DR
 
@@ -22,7 +22,7 @@ Le problème :
   → L'utilisateur ne peut pas trader immédiatement après un bridge.
   → UX catastrophique pour un trader qui veut entrer en position rapidement.
 
-La solution IntentBridge :
+La solution Velora :
   Offrir le CHOIX à l'utilisateur :
   → Instant Bridge : fonds en ~2s grâce à un filler (LP), moyennant une fee (~5-100 bps).
   → Classic Bridge : fonds en ~6-8 min via le pipeline trustless, sans fee supplémentaire.
@@ -65,7 +65,7 @@ Comparaison des deux modes :
 ```
 Comparaison avec les autres bridges :
 
-| Critère               | Bridge classique (lock & mint) | Bridge optimistic (relay)    | IntentBridge (intent-based)     |
+| Critère               | Bridge classique (lock & mint) | Bridge optimistic (relay)    | Velora (intent-based)     |
 |-----------------------|-------------------------------|-----------------------------|---------------------------------|
 | Temps pour l'user     | 15-45 min                     | 2-10 min (+ challenge)      | ~2s (Instant) ou ~7min (Classic)|
 | Trust assumption      | Comité de validators          | Watcher honnête (1-of-N)    | Trustless (ZK proof BEEFY)      |
@@ -215,7 +215,7 @@ Le frontend affiche le choix :
 
 ## Pourquoi Polkadot × Hyperliquid ?
 
-| Critère | Bridge classique (Wormhole, etc.) | IntentBridge (Polkadot → Arbitrum Sepolia) |
+| Critère | Bridge classique (Wormhole, etc.) | Velora (Polkadot → Arbitrum Sepolia) |
 |---------|----------------------------------|-------------------------------------|
 | **Temps utilisateur** | 15-45 min (attente finalité + relay) | ~2s (Instant) ou ~7min (Classic) — au choix |
 | **Settlement** | Synchronous (bloquant) | Asynchronous trustless (~6-8 min, non-bloquant) |
@@ -877,29 +877,20 @@ Step 5: Settlement trustless en arrière-plan (Mode Instant)
 
 | Config | Valeur |
 |--------|--------|
-| **Source Chain** | Sepolia (Ethereum testnet) — stand-in pour Asset Hub |
-| **Destination Chain** | Arbitrum Sepolia — stand-in pour Arbitrum Sepolia |
+| **Source Chain** | Polkadot Hub Testnet (chain 420420417) |
+| **Destination Chain** | Arbitrum Sepolia (chain 421614) |
 | **Relay** | Bot simulateur (appelle `markOrderFilled` sur source après détection du fill sur dest) |
 | **Settlement** | Auto-settlement via filler service (dummy proof) |
 | **ISMP** | Contrats implémentent `IIsmpModule` — prêts pour Hyperbridge réel |
 
-**Pourquoi Sepolia + Arbitrum Sepolia ?** Arbitrum Sepolia n'est pas encore supporté par Hyperbridge/ISMP. Les chaînes actuellement supportées par Hyperbridge sont : Ethereum, Arbitrum, Optimism, Base, Polygon, BNB, Gnosis. L'architecture et les contrats sont **identiques** — seuls les chain IDs changent quand Hyperbridge ajoutera Arbitrum Sepolia. Le demo sur Sepolia + Arbitrum Sepolia valide le flow complet end-to-end.
-
 **Relay simulateur** : En production, Hyperbridge relayers livrent les messages ISMP entre chaînes. Pour le demo testnet, un bot (`filler/src/relay.ts`) surveille les événements `OrderFilled` sur la destination et appelle `markOrderFilled()` sur la source, simulant le message `FILL_CONFIRMATION` ISMP.
-
-**Roadmap vers production** :
-1. Hyperbridge ajoute Arbitrum Sepolia comme chaîne supportée
-2. Remplacer les chain IDs (Sepolia → Asset Hub, Arb Sepolia → Arbitrum Sepolia)
-3. Remplacer le relay simulateur par les vrais relayers Hyperbridge
-4. Remplacer les dummy proofs par les vraies preuves ZK BEEFY
-5. Les contrats `IIsmpModule.onAccept()` fonctionneront nativement
 
 ---
 
 ## Structure du Projet
 
 ```
-intentbridge/
+velora/
 ├── contracts/
 │   ├── src/
 │   │   ├── source/
@@ -939,8 +930,8 @@ intentbridge/
 │   │   └── mocks/
 │   │       └── MockIsmpHost.sol           # Mock ISMP host pour tests
 │   ├── script/
-│   │   ├── DeployAssetHub.s.sol           # Déploiement IntentGateway sur source chain (Sepolia)
-│   │   ├── DeployArbitrum Sepolia.s.sol           # Déploiement IntentSettler + FillerRegistry + FallbackReceiver (Arb Sepolia)
+│   │   ├── DeployAssetHub.s.sol           # Déploiement IntentGateway sur source chain (Polkadot Hub Testnet)
+│   │   ├── DeployArbitrumSepolia.s.sol    # Déploiement IntentSettler + FillerRegistry + FallbackReceiver (Arb Sepolia)
 │   │   └── ConfigureCrossChain.s.sol      # Configuration cross-chain post-déploiement
 │   ├── foundry.toml
 │   └── lib/
@@ -960,26 +951,25 @@ intentbridge/
 │   ├── package.json
 │   └── tsconfig.json
 │
-├── frontend/                               # Dashboard utilisateur
+├── frontend/                               # Interface utilisateur
 │   ├── src/
-│   │   ├── App.tsx                        # Router principal, pages
-│   │   ├── pages/
-│   │   │   ├── BridgePage.tsx             # Interface de bridge avec choix Instant/Classic
-│   │   │   ├── DashboardPage.tsx          # Historique ordres, status settlement
-│   │   │   └── FillerPage.tsx             # Dashboard filler (P&L, ordres remplis, liquidité)
+│   │   ├── App.jsx                        # Router principal, layout, footer
+│   │   ├── main.jsx                       # Entry point React
 │   │   ├── components/
-│   │   │   ├── OrderForm.tsx              # Formulaire avec toggle Instant/Classic + slider fee
-│   │   │   ├── OrderTracker.tsx           # Suivi temps réel du settlement pipeline
-│   │   │   ├── SettlementProgress.tsx     # Barre de progression (Mode Instant: filler / Mode Classic: direct)
-│   │   │   └── WalletConnect.tsx          # Connexion double wallet (Polkadot + EVM)
-│   │   ├── hooks/
-│   │   │   ├── useOrderEvents.ts          # Listen OrderPlaced / OrderFilled events
-│   │   │   ├── useSettlementStatus.ts     # Track settlement progression
-│   │   │   └── useFillerStats.ts          # Stats du filler (orders, revenue, capital)
+│   │   │   ├── BridgeWidget.jsx           # Widget de bridge avec state machine (approve → create → fill → settle → deposit HL)
+│   │   │   ├── ConnectButton.jsx          # Connexion wallet EVM (MetaMask, etc.)
+│   │   │   ├── FaucetButton.jsx           # Mint 1000 mock USDC sur source chain
+│   │   │   ├── StaggeredMenu.jsx          # Menu burger avec animations GSAP
+│   │   │   ├── Plasma.jsx                 # Background WebGL animé
+│   │   │   ├── EarnPage.jsx               # Page Earn (fillers)
+│   │   │   ├── ResourcesPage.jsx          # Documentation intégrée
+│   │   │   ├── TeamPage.jsx               # Page équipe
+│   │   │   └── ElasticSlider.jsx          # Slider fee (composant UI)
 │   │   └── config/
-│   │       └── contracts.ts               # Adresses déployées, ABIs, chain configs
+│   │       ├── contracts.js               # Adresses déployées, ABIs, chain configs
+│   │       └── wagmi.js                   # Configuration wagmi (chains, transports)
 │   ├── package.json
-│   └── vite.config.ts
+│   └── vite.config.js
 │
 ├── POLKADOT.md                             # Ce fichier
 └── .gitignore
@@ -1149,8 +1139,8 @@ foundryup
 
 # Installer Node.js (>= 18)
 # Cloner le repo
-git clone https://github.com/ton-org/intentbridge.git
-cd intentbridge
+git clone https://github.com/aydi26/polkadot-hackathon.git
+cd polkadot-hackathon
 ```
 
 ### Contracts — Build & Test
@@ -1171,11 +1161,11 @@ forge coverage
 cp .env.example .env
 # Remplir PRIVATE_KEY, RPC_SOURCE, RPC_DESTINATION, USDC addresses
 
-# Déploiement IntentGateway (Sepolia — Source)
-forge script script/DeployAssetHub.s.sol --rpc-url $RPC_SOURCE --broadcast --verify
+# Déploiement IntentGateway (Polkadot Hub Testnet — Source)
+forge script script/DeployAssetHub.s.sol --chain polkadot-testnet --rpc-url https://eth-rpc-testnet.polkadot.io/ --broadcast
 
 # Déploiement IntentSettler + FillerRegistry + FallbackReceiver (Arb Sepolia — Destination)
-forge script script/DeployArbitrum Sepolia.s.sol --rpc-url $RPC_DESTINATION --broadcast --verify
+forge script script/DeployArbitrumSepolia.s.sol --rpc-url https://sepolia-rollup.arbitrum.io/rpc --broadcast
 
 # Configuration cross-chain
 forge script script/ConfigureCrossChain.s.sol --rpc-url $RPC_DESTINATION --broadcast
@@ -1259,12 +1249,12 @@ Phase 4 — Frontend :
 
 | Page / Feature | État | Description |
 |---------------|------|-------------|
-| Bridge Page | Implémenté | Interface de bridge avec choix Instant/Classic |
-| Dashboard | Implémenté | Historique ordres, status settlement |
-| Filler Dashboard | Implémenté | P&L, ordres remplis, liquidité |
-| Order Tracker | Implémenté | Suivi temps réel du pipeline |
-| Settlement Progress | Implémenté | Barre XCM → BEEFY → ISMP → Settled (Mode Instant et Classic) |
-| Wallet Connect | Implémenté | Connexion wallet EVM |
+| Bridge Widget | Implémenté | Widget de bridge avec state machine complète : approve → create → fill → settle → deposit HL |
+| Auto-deposit HL | Implémenté | Après settlement, dépose automatiquement sur Hyperliquid Testnet via Bridge2 |
+| Faucet Button | Implémenté | Mint 1000 mock USDC sur Polkadot Hub avec animation droplet |
+| Resources Page | Implémenté | Documentation intégrée du protocole |
+| Team Page | Implémenté | Page équipe |
+| Wallet Connect | Implémenté | Connexion wallet EVM (MetaMask, etc.) |
 
 ### ISMP Integration
 
@@ -1323,17 +1313,18 @@ Phase 4 — Frontend :
 | @polkadot/api | Interaction avec Asset Hub (Substrate) |
 | typescript | Typage statique |
 
-### Frontend (React / TypeScript)
+### Frontend (React / JavaScript)
 
 | Package | Usage |
 |---------|-------|
 | react | Framework UI |
 | typescript | Typage statique |
 | vite | Bundler + dev server |
-| wagmi v2 + viem | Interaction EVM (Arbitrum Sepolia) |
+| wagmi v3 + viem | Interaction EVM (Arbitrum Sepolia) |
 | @tanstack/react-query | Data fetching |
-| tailwindcss | Styling |
 | react-router-dom | Routing |
+| gsap | Animations (menu, transitions) |
+| motion | Animation droplet (Framer Motion) |
 
 ---
 
@@ -1364,7 +1355,7 @@ Phase 4 — Frontend :
 | BEEFY — Bridge Efficiency Enabling Finality Yielder | `https://wiki.polkadot.network/docs/learn-beefy` |
 | ISMP — Interoperable State Machine Protocol | `https://docs.hyperbridge.network/protocol/ismp` |
 | Hyperliquid — Documentation | `https://hyperliquid.gitbook.io/hyperliquid-docs` |
-| Arbitrum Sepolia — EVM on Hyperliquid | `https://hyperliquid.gitbook.io/hyperliquid-docs/hyperevm` |
+| Hyperliquid — Testnet Bridge | `https://app.hyperliquid-testnet.xyz` |
 | Polkadot Asset Hub | `https://wiki.polkadot.network/docs/learn-guides-assets-create` |
 | OpenZeppelin Contracts 5.x | `https://docs.openzeppelin.com/contracts` |
 | Foundry Book | `https://book.getfoundry.sh` |

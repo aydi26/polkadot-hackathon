@@ -1,4 +1,4 @@
-# IntentBridge
+# Velora
 
 Intent-based cross-chain bridge: **Polkadot Hub → Arbitrum Sepolia → Hyperliquid Testnet**. Two modes: **Instant Bridge** (~2s via fillers) and **Classic Bridge** (~6-8min trustless). Three-layer settlement: TEE fast path (Phala Network, ~5-10s), ZK BEEFY fallback (~6-8min), and classic trustless bridge.
 
@@ -41,7 +41,7 @@ ERC-7683:   ERC7683OriginAdapter + ERC7683DestinationAdapter
 ## Project Structure
 
 ```
-intentbridge/
+velora/
   contracts/       Solidity smart contracts (Foundry)
   filler/          TypeScript filler service (ethers v6)
   frontend/        React + Vite + wagmi frontend

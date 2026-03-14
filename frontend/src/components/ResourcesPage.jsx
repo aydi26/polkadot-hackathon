@@ -22,7 +22,7 @@ const docsTree = [
     category: "Protocol",
     content: {
       title: "Getting Started",
-      body: "IntentBridge is an intent-based cross-chain bridge from Polkadot Asset Hub to Hyperliquid Testnet (via Arbitrum Sepolia). Users lock USDC in an on-chain escrow and choose between two bridging modes: Instant Bridge (~2s, filler fronts funds for a fee) or Classic Bridge (~6-8 min, trustless settlement via ZK BEEFY with no extra fees). Funds are automatically deposited to Hyperliquid via the official bridge.",
+      body: "Velora is an intent-based cross-chain bridge from Polkadot Asset Hub to Hyperliquid Testnet (via Arbitrum Sepolia). Users lock USDC in an on-chain escrow and choose between two bridging modes: Instant Bridge (~2s, filler fronts funds for a fee) or Classic Bridge (~6-8 min, trustless settlement via ZK BEEFY with no extra fees). Funds are automatically deposited to Hyperliquid via the official bridge.",
       subsections: [
         {
           title: "Prerequisites",
@@ -166,13 +166,16 @@ const docsTree = [
     category: "Reference",
     content: {
       title: "Network Configuration",
-      body: "Current testnet deployment (hackathon demo):",
+      body: "Current testnet deployment:",
       table: [
         { label: "Source Chain", value: "Polkadot Hub Testnet (chain ID 420420417)" },
         { label: "Destination Chain", value: "Arbitrum Sepolia (chain ID 421614) → Hyperliquid Testnet" },
-        { label: "IntentGateway", value: "Deployed on Polkadot Hub Testnet (address TBD)" },
-        { label: "IntentSettler", value: "Deployed on Arbitrum Sepolia (address TBD)" },
-        { label: "USDC Contract", value: "Asset Hub USDC (6 decimals)" },
+        { label: "IntentGateway", value: "0xf1860c78a3fcb470321904936D8672A4bEbf9C3d (Polkadot Hub Testnet)" },
+        { label: "IntentSettler", value: "0xc3b89b522812d4966193367b8698969A8FbC9c4B (Arbitrum Sepolia)" },
+        { label: "MockUSDC (source)", value: "0xb5C8B011f9EBDBB73cd9EF89aCdb05d64Cd972b2 (6 decimals)" },
+        { label: "USDC2 (dest)", value: "0x1baAbB04529D43a73232B713C0FE471f7c7334d5 (Arbitrum Sepolia)" },
+        { label: "TEEVerifier", value: "0x375bC4F385cFed492a8efD384912baB912033E2B (Phala Network)" },
+        { label: "HL Bridge2", value: "0x08cfc1B6b2dCF36A1480b99353A354AA8AC56f89 (auto-deposit to Hyperliquid)" },
         { label: "Filler Window", value: "30 seconds (time for filler to fill before fallback)" },
       ],
     },

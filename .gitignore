@@ -36,6 +36,9 @@ filler/dist/
 # Logs
 *.log
 
+# Claude Code
+.claude/
+
 # Misc
 *.tgz
 coverage/

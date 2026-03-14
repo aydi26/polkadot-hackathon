@@ -36,10 +36,14 @@ contract IntentGateway is IIntentGateway, IIsmpModule, OrderStore, ReentrancyGua
     /// @notice ISMP host address for cross-chain messaging
     address public ismpHandler;
 
+    /// @notice Authorized relayer for testnet (simulates ISMP relay)
+    address public relayer;
+
     // ──────────────────────────── Constructor ────────────────────────────
 
     constructor(address _owner, address _ismpHandler) Ownable(_owner) {
         ismpHandler = _ismpHandler;
+        relayer = _owner; // deployer is default relayer
     }
 
     // ──────────────────────────── Admin ────────────────────────────
@@ -54,6 +58,10 @@ contract IntentGateway is IIntentGateway, IIsmpModule, OrderStore, ReentrancyGua
 
     function setIsmpHandler(address _ismpHandler) external onlyOwner {
         ismpHandler = _ismpHandler;
+    }
+
+    function setRelayer(address _relayer) external onlyOwner {
+        relayer = _relayer;
     }
 
     function pause() external onlyOwner {
@@ -217,9 +225,9 @@ contract IntentGateway is IIntentGateway, IIsmpModule, OrderStore, ReentrancyGua
         order.status = OrderLib.OrderStatus.Filled;
     }
 
-    /// @notice External mark filled — restricted to ISMP host (for backward compatibility)
+    /// @notice External mark filled — callable by ISMP host or authorized relayer
     function markOrderFilled(bytes32 orderId) external {
-        require(msg.sender == ismpHandler || msg.sender == address(this), "Unauthorized");
+        require(msg.sender == ismpHandler || msg.sender == relayer || msg.sender == address(this), "Unauthorized");
         _markOrderFilled(orderId);
     }
 }

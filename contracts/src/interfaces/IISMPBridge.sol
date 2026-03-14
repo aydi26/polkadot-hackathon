@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-/// @title IISMPBridge - Real ISMP types for IntentBridge cross-chain messaging
+/// @title IISMPBridge - Real ISMP types for Velora cross-chain messaging
 /// @notice Mirrors polytope-labs/ismp-solidity types for Hyperbridge integration
 /// @dev When Hyperbridge SDK is available as a stable Foundry lib, replace with direct imports
 
@@ -62,7 +62,7 @@ struct DispatchPost {
     address payer;          // Who pays for this request
 }
 
-/// @notice The ISMP dispatcher interface (subset used by IntentBridge)
+/// @notice The ISMP dispatcher interface (subset used by Velora)
 interface IDispatcher {
     function dispatch(DispatchPost memory request) external payable returns (bytes32 commitment);
     function host() external view returns (bytes memory);
@@ -103,7 +103,7 @@ library StateMachine {
     }
 }
 
-// ──────────────────── IntentBridge-Specific Types ────────────────────
+// ──────────────────── Velora-Specific Types ────────────────────
 
 /// @notice Message types for cross-chain communication
 enum MessageType {
@@ -112,7 +112,7 @@ enum MessageType {
     FALLBACK_DELIVERY       // Source → Dest: deliver funds via classic bridge
 }
 
-/// @notice Cross-chain message payload for IntentBridge
+/// @notice Cross-chain message payload for Velora
 struct BridgeMessage {
     bytes32 orderId;
     address filler;

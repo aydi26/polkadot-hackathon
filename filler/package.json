@@ -1,7 +1,7 @@
 {
-  "name": "intentbridge-filler",
+  "name": "velora-filler",
   "version": "0.1.0",
-  "description": "IntentBridge Filler Service — watches OrderPlaced events and fills orders on Arbitrum Sepolia → Hyperliquid Testnet",
+  "description": "Velora Filler Service — watches OrderPlaced events and fills orders on Arbitrum Sepolia → Hyperliquid Testnet",
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",

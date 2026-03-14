@@ -1,5 +1,6 @@
-import { useRef, useEffect, useState } from "react";
+import { useRef, useEffect, useState, useCallback } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
+import { motion, useAnimation } from "motion/react";
 import gsap from "gsap";
 import "./StaggeredMenu.css";
 
@@ -40,26 +41,38 @@ const SocialIcon = ({ type }) => {
   }
 };
 
+const LINE_VARIANTS = {
+  normal: { rotate: 0, y: 0, opacity: 1 },
+  animate: (custom) => ({
+    rotate: custom === 1 ? 45 : custom === 3 ? -45 : 0,
+    y: custom === 1 ? 6 : custom === 3 ? -6 : 0,
+    opacity: custom === 2 ? 0 : 1,
+    transition: { type: "spring", stiffness: 260, damping: 20 },
+  }),
+};
+
 export default function StaggeredMenu() {
   const [isOpen, setIsOpen] = useState(false);
   const menuRef = useRef(null);
+  const panelRef = useRef(null);
   const overlayRef = useRef(null);
   const itemsRef = useRef([]);
   const socialsRef = useRef(null);
   const navigate = useNavigate();
   const location = useLocation();
+  const iconControls = useAnimation();
 
   useEffect(() => {
     if (isOpen) {
       document.body.style.overflow = "hidden";
-      // Animate in
+      iconControls.start("animate");
       gsap.fromTo(
         overlayRef.current,
         { opacity: 0 },
         { opacity: 1, duration: 0.3, ease: "power2.out" }
       );
       gsap.fromTo(
-        menuRef.current,
+        panelRef.current,
         { x: "100%" },
         { x: "0%", duration: 0.4, ease: "power3.out" }
       );
@@ -82,7 +95,23 @@ export default function StaggeredMenu() {
       );
     } else {
       document.body.style.overflow = "";
+      iconControls.start("normal");
     }
+  }, [isOpen]);
+
+  // Close on click outside
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleClickOutside = (e) => {
+      if (
+        panelRef.current && !panelRef.current.contains(e.target) &&
+        menuRef.current && !menuRef.current.contains(e.target)
+      ) {
+        handleClose();
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [isOpen]);
 
   const handleClose = () => {
@@ -91,12 +120,17 @@ export default function StaggeredMenu() {
       duration: 0.25,
       ease: "power2.in",
     });
-    gsap.to(menuRef.current, {
+    gsap.to(panelRef.current, {
       x: "100%",
       duration: 0.3,
       ease: "power3.in",
       onComplete: () => setIsOpen(false),
     });
+  };
+
+  const handleToggle = () => {
+    if (isOpen) handleClose();
+    else setIsOpen(true);
   };
 
   const handleNavigate = (path) => {
@@ -106,17 +140,28 @@ export default function StaggeredMenu() {
 
   return (
     <>
-      {/* Hamburger button */}
+      {/* Animated hamburger / X button */}
       <button
+        ref={menuRef}
         className="staggered-menu-trigger"
-        onClick={() => setIsOpen(true)}
+        onClick={handleToggle}
         aria-label="Menu"
       >
-        <div className="hamburger-lines">
-          <span />
-          <span />
-          <span />
-        </div>
+        <svg
+          fill="none"
+          height={22}
+          stroke="currentColor"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          strokeWidth="2"
+          viewBox="0 0 24 24"
+          width={22}
+          xmlns="http://www.w3.org/2000/svg"
+        >
+          <motion.line animate={iconControls} custom={1} variants={LINE_VARIANTS} x1="4" x2="20" y1="6" y2="6" />
+          <motion.line animate={iconControls} custom={2} variants={LINE_VARIANTS} x1="4" x2="20" y1="12" y2="12" />
+          <motion.line animate={iconControls} custom={3} variants={LINE_VARIANTS} x1="4" x2="20" y1="18" y2="18" />
+        </svg>
       </button>
 
       {/* Menu panel */}
@@ -127,13 +172,7 @@ export default function StaggeredMenu() {
             className="staggered-menu-overlay"
             onClick={handleClose}
           />
-          <div ref={menuRef} className="staggered-menu-panel">
-            {/* Close button */}
-            <button className="staggered-menu-close" onClick={handleClose}>
-              <svg viewBox="0 0 24 24" fill="currentColor">
-                <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
-              </svg>
-            </button>
+          <div ref={panelRef} className="staggered-menu-panel">
 
             {/* Menu items */}
             <nav className="staggered-menu-nav">
@@ -151,11 +190,14 @@ export default function StaggeredMenu() {
 
             {/* Social icons */}
             <div ref={socialsRef} className="staggered-menu-socials">
-              <a href="https://x.com" className="staggered-menu-social" title="X" target="_blank" rel="noreferrer">
+              <a href="https://x.com/aiden_7788" className="staggered-menu-social" title="X" target="_blank" rel="noreferrer">
                 <SocialIcon type="x" />
               </a>
-              <a href="https://github.com" className="staggered-menu-social" title="GitHub" target="_blank" rel="noreferrer">
+              <a href="https://github.com/aydi26/polkadot-hackathon" className="staggered-menu-social" title="GitHub" target="_blank" rel="noreferrer">
                 <SocialIcon type="github" />
+              </a>
+              <a href="https://t.me/aiden_7788" className="staggered-menu-social" title="Telegram" target="_blank" rel="noreferrer">
+                <SocialIcon type="telegram" />
               </a>
             </div>
           </div>

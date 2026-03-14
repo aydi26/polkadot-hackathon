@@ -16,10 +16,10 @@ export const CHAINS = {
 export const DEST_CHAINS = {
   421614: {
     id: 421614,
-    name: "Arbitrum Sepolia",
-    shortName: "Arb Sepolia",
+    name: "Hyperliquid Testnet",
+    shortName: "Hyperliquid Testnet",
     settlementMode: "tee",
-    finalDestination: "Hyperliquid Testnet",
+    finalDestination: null,
     estimatedTime: "~2s",
     classicTime: "~7min",
     settlerAddress:
