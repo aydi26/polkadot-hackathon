@@ -28,7 +28,6 @@ import {
   DEST_CHAIN_ID,
   OrderStatus,
   ORDER_STATUS_LABELS,
-  HL_BRIDGE_ADDRESS,
 } from "../config/contracts";
 import polkadotDotLogo from "../assets svg/polkadot-new-dot-logo.svg";
 import "./BridgeWidget.css";
@@ -161,7 +160,6 @@ const STEPS_INSTANT = [
   { key: "pool_waiting", label: "Privacy Lock" },
   { key: "fill", label: "Filler Delivery" },
   { key: "settle", label: "Settlement" },
-  { key: "deposit_hl", label: "Deposit to HL" },
 ];
 
 const STANDARD_AMOUNTS = [
@@ -264,18 +262,6 @@ export default function BridgeWidget() {
     error: createError,
     reset: resetCreate,
   } = useWriteContract();
-
-  // Deposit to Hyperliquid tx
-  const {
-    writeContract: depositHL,
-    data: depositHLTxHash,
-    error: depositHLError,
-    reset: resetDepositHL,
-  } = useWriteContract();
-
-  // Wait for deposit HL receipt (Arb Sepolia — fast RPC, wagmi default is fine)
-  const { isSuccess: depositHLConfirmed, isError: depositHLReverted } =
-    useWaitForTransactionReceipt({ hash: depositHLTxHash });
 
   // Manual fast polling for source chain tx receipts (Polkadot Hub RPC is slow)
   const [approveConfirmed, setApproveConfirmed] = useState(false);
@@ -476,7 +462,7 @@ export default function BridgeWidget() {
         if (status === OrderStatus.Settled || isSettled) {
           setIsOrderSettled(true);
           if (!countdownActive) {
-            setStep("depositing_hl"); // countdown done + settled → deposit
+            setStep("completed"); // countdown done + settled → done (TEE handles HL)
           }
         } else if (status === OrderStatus.Filled || isFilled) {
           setStep("settling");
@@ -556,10 +542,10 @@ export default function BridgeWidget() {
     return () => clearInterval(interval);
   }, [step, countdownActive, poolDepositBlock]);
 
-  // When settlement completes → deposit HL
+  // When settlement completes → done (TEE filler handles HL deposit automatically)
   useEffect(() => {
     if (isOrderSettled && step === "settling") {
-      setStep("depositing_hl");
+      setStep("completed");
     }
   }, [isOrderSettled, step]);
 
@@ -711,76 +697,6 @@ export default function BridgeWidget() {
     }
   }, [createReverted, step]);
 
-  // Auto-deposit to Hyperliquid
-  const [depositHLTriggered, setDepositHLTriggered] = useState(false);
-
-  // Step 1: auto-switch chain when entering depositing_hl
-  useEffect(() => {
-    if (step !== "depositing_hl" || depositHLTriggered) return;
-    if (chainId !== arbitrumSepolia.id) {
-      switchChain({ chainId: arbitrumSepolia.id });
-    }
-  }, [step, depositHLTriggered, chainId]);
-
-  // Step 2: auto-send deposit once on correct chain + correct wallet
-  useEffect(() => {
-    if (step !== "depositing_hl" || depositHLTriggered) return;
-    if (chainId !== arbitrumSepolia.id) return;
-    // If user set a custom destination, wait for them to switch wallet
-    const destWallet = destAddress || address;
-    if (destWallet.toLowerCase() !== address.toLowerCase()) return;
-    setDepositHLTriggered(true);
-
-    (async () => {
-      try {
-        const { createPublicClient, http } = await import("viem");
-        const arbClient = createPublicClient({
-          chain: arbitrumSepolia,
-          transport: http(destChainConfig.rpc),
-        });
-        const gasPrice = await arbClient.getGasPrice();
-
-        depositHL({
-          address: destChainConfig.usdcAddress,
-          abi: ERC20_ABI,
-          functionName: "transfer",
-          args: [HL_BRIDGE_ADDRESS, receiveAmount],
-          gasPrice: gasPrice * 2n,
-        });
-      } catch {
-        depositHL({
-          address: destChainConfig.usdcAddress,
-          abi: ERC20_ABI,
-          functionName: "transfer",
-          args: [HL_BRIDGE_ADDRESS, receiveAmount],
-        });
-      }
-    })();
-  }, [step, depositHLTriggered, chainId, address]);
-
-  // Deposit HL confirmed → completed
-  useEffect(() => {
-    if (depositHLConfirmed && step === "depositing_hl") {
-      setStep("completed");
-    }
-  }, [depositHLConfirmed]);
-
-  // Deposit HL errors
-  useEffect(() => {
-    if (depositHLError && step === "depositing_hl") {
-      setError(depositHLError.message?.slice(0, 150) || "Hyperliquid deposit failed");
-      setFailedAt("deposit_hl");
-      setStep("failed");
-    }
-  }, [depositHLError]);
-
-  useEffect(() => {
-    if (depositHLReverted && step === "depositing_hl") {
-      setError("Hyperliquid deposit transaction reverted");
-      setFailedAt("deposit_hl");
-      setStep("failed");
-    }
-  }, [depositHLReverted]);
 
   // Handlers
   const handleBridge = () => {
@@ -822,7 +738,6 @@ export default function BridgeWidget() {
     setPoolDepositBlock(null);
     resetApprove();
     resetCreate();
-    resetDepositHL();
     setApproveConfirmed(false);
     setApproveReverted(false);
     setCreateConfirmed(false);
@@ -869,7 +784,7 @@ export default function BridgeWidget() {
 
   // Step progress
   const getStepStatus = (stepKey) => {
-    const order = ["approve", "create", "pool_waiting", "fill", "settle", "deposit_hl"];
+    const order = ["approve", "create", "pool_waiting", "fill", "settle"];
     const stepIndex = order.indexOf(stepKey);
     const stepMap = {
       approving: 0,
@@ -877,8 +792,7 @@ export default function BridgeWidget() {
       pool_waiting: 2,
       waiting_fill: 3,
       settling: 4,
-      depositing_hl: 5,
-      completed: 6,
+      completed: 5,
     };
     const currentIndex = stepMap[step];
     if (step === "failed" && failedAt) {
@@ -934,11 +848,6 @@ export default function BridgeWidget() {
                           {step === "pool_waiting" && !countdownActive && "Waiting for TEE to trigger bridge..."}
                           {step === "waiting_fill" && "Waiting for filler (~2s)..."}
                           {step === "settling" && "TEE anonymous settlement..."}
-                          {step === "depositing_hl" && !depositHLTriggered && destAddress && destAddress.toLowerCase() !== address?.toLowerCase() && (
-                            <span>Switch to your destination wallet ({destAddress.slice(0, 6)}...{destAddress.slice(-4)}) to deposit on Hyperliquid</span>
-                          )}
-                          {step === "depositing_hl" && !depositHLTriggered && (!destAddress || destAddress.toLowerCase() === address?.toLowerCase()) && "Switching chain..."}
-                          {step === "depositing_hl" && depositHLTriggered && "Depositing to Hyperliquid..."}
                         </div>
                       )}
                     </div>
@@ -1076,20 +985,6 @@ export default function BridgeWidget() {
                     style={{ color: "#FC007B", textDecoration: "underline", fontSize: 12 }}
                   >
                     {createTxHash.slice(0, 10)}...{createTxHash.slice(-8)}
-                  </a>
-                </div>
-              )}
-              {depositHLTxHash && (
-                <div className="bridge-result-row">
-                  <span className="label">Deposit TX</span>
-                  <a
-                    href={`https://sepolia.arbiscan.io/tx/${depositHLTxHash}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="value"
-                    style={{ color: "#FC007B", textDecoration: "underline", fontSize: 12 }}
-                  >
-                    {depositHLTxHash.slice(0, 10)}...{depositHLTxHash.slice(-8)}
                   </a>
                 </div>
               )}
