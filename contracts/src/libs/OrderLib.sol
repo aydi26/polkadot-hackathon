@@ -11,8 +11,7 @@ library OrderLib {
         Filled,     // Filler has fronted the funds
         Settled,    // Settlement verified, escrow released
         Expired,    // Deadline passed, can be cancelled
-        Cancelled,  // User cancelled after expiry
-        Fallback    // No filler, fallback bridge initiated
+        Cancelled   // User cancelled after expiry
     }
 
     // ──────────────────────────── Structs ────────────────────────────
@@ -56,6 +55,20 @@ library OrderLib {
         return keccak256(abi.encodePacked(user, token, amount, destChain, destAddress, feeOffer, deadline, nonce));
     }
 
+    /// @notice Compute unique order ID for private orders (uses hash of encrypted dest instead of plaintext)
+    function computePrivateOrderId(
+        address user,
+        address token,
+        uint256 amount,
+        uint32 destChain,
+        bytes memory encryptedDest,
+        uint256 feeOffer,
+        uint256 deadline,
+        uint256 nonce
+    ) internal pure returns (bytes32) {
+        return keccak256(abi.encodePacked(user, token, amount, destChain, keccak256(encryptedDest), feeOffer, deadline, nonce));
+    }
+
     /// @notice Check if an order can be filled (status == Pending and within deadline)
     function canFill(Order storage order) internal view returns (bool) {
         return order.status == OrderStatus.Pending && block.timestamp <= order.deadline;
@@ -66,8 +79,4 @@ library OrderLib {
         return order.status == OrderStatus.Pending && block.timestamp > order.deadline;
     }
 
-    /// @notice Check if fallback can be executed (past filler window, still Pending)
-    function canFallback(Order storage order, uint256 fillerWindow) internal view returns (bool) {
-        return order.status == OrderStatus.Pending && block.timestamp > order.createdAt + fillerWindow;
-    }
 }

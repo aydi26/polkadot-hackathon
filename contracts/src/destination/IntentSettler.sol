@@ -138,12 +138,58 @@ contract IntentSettler is IIntentSettler, IIsmpModule, FillStore, ReentrancyGuar
     }
 
     /// @notice Verify settlement via TEE attestation (fast path ~5-10s)
-    /// @dev Uses Phala Network TEE attestation instead of ZK BEEFY proof.
-    ///      The TEE enclave verifies the escrow lock on the source chain and signs an attestation.
+    /// @dev Uses Phala dstack TEE attestation instead of ZK BEEFY proof.
+    ///      The TEE filler signs an attestation with its dstack-derived wallet key.
     function verifyTEESettlement(bytes32 orderId, bytes calldata teeAttestation, bytes calldata signature)
         external
         nonReentrant
     {
+        _verifyTEESettlementInternal(orderId, teeAttestation, signature);
+    }
+
+    /// @notice Verify settlement via TEE attestation with full TDX quote recording
+    /// @dev Same as verifyTEESettlement but also records the raw TDX quote on-chain
+    ///      for off-chain auditability of the dstack CVM execution.
+    function verifyTEESettlementWithQuote(
+        bytes32 orderId,
+        bytes calldata teeAttestation,
+        bytes calldata signature,
+        bytes calldata tdxQuote
+    ) external nonReentrant {
+        require(_isFilled(orderId), "Order not filled");
+        OrderLib.Fill storage fill = _fills[orderId];
+        require(!fill.settled, "Already settled");
+        require(teeVerifier != address(0), "TEE verifier not set");
+
+        // Decode attestation
+        ITEEVerifier.TEEAttestation memory attestation = abi.decode(teeAttestation, (ITEEVerifier.TEEAttestation));
+
+        // Verify attestation with TDX quote via TEE verifier
+        require(
+            ITEEVerifier(teeVerifier).verifyAttestationWithQuote(attestation, signature, tdxQuote),
+            "TEE attestation invalid"
+        );
+
+        // Verify attestation matches this order
+        require(attestation.orderId == orderId, "Order ID mismatch");
+        require(attestation.filler == fill.filler, "Filler mismatch");
+
+        fill.settled = true;
+        _removePendingFill(orderId);
+
+        emit TEESettlementVerified(orderId, fill.filler, address(0));
+
+        if (fillerRegistry != address(0)) {
+            IFillerRegistry(fillerRegistry).recordSettlement(fill.filler);
+        }
+    }
+
+    /// @dev Internal TEE settlement verification logic
+    function _verifyTEESettlementInternal(
+        bytes32 orderId,
+        bytes calldata teeAttestation,
+        bytes calldata signature
+    ) internal {
         require(_isFilled(orderId), "Order not filled");
         OrderLib.Fill storage fill = _fills[orderId];
         require(!fill.settled, "Already settled");

@@ -18,8 +18,10 @@ contract DeployTEEVerifier is Script {
         // Deploy TEEVerifier
         TEEVerifier teeVerifier = new TEEVerifier();
 
-        // Add deployer as trusted enclave (for testnet mock TEE signing)
-        teeVerifier.addTrustedEnclave(deployer);
+        // Add trusted enclave: use TEE_ENCLAVE_ADDRESS if set (dstack-derived wallet),
+        // otherwise fall back to deployer (for testnet mock TEE signing)
+        address enclaveAddr = vm.envOr("TEE_ENCLAVE_ADDRESS", deployer);
+        teeVerifier.addTrustedEnclave(enclaveAddr);
 
         // Configure TEEVerifier on IntentSettler
         IntentSettler settler = IntentSettler(settlerAddr);
@@ -29,7 +31,7 @@ contract DeployTEEVerifier is Script {
 
         console2.log("=== TEE Verifier Deployment ===");
         console2.log("TEEVerifier deployed at:", address(teeVerifier));
-        console2.log("Trusted enclave (deployer):", deployer);
+        console2.log("Trusted enclave:", enclaveAddr);
         console2.log("Configured on settler:", settlerAddr);
         console2.log("");
         console2.log("TEE_VERIFIER_421614=", address(teeVerifier));

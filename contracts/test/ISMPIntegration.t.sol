@@ -4,7 +4,6 @@ pragma solidity ^0.8.24;
 import {Test} from "forge-std/Test.sol";
 import {IntentGateway} from "../src/source/IntentGateway.sol";
 import {IntentSettler} from "../src/destination/IntentSettler.sol";
-import {FallbackReceiver} from "../src/destination/FallbackReceiver.sol";
 import {MockIsmpHost} from "./mocks/MockIsmpHost.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 import {OrderLib} from "../src/libs/OrderLib.sol";
@@ -15,7 +14,6 @@ import {MessageType} from "../src/interfaces/IISMPBridge.sol";
 contract ISMPIntegrationTest is Test {
     IntentGateway public gateway;
     IntentSettler public settler;
-    FallbackReceiver public fallbackReceiver;
     MockIsmpHost public ismpHost;
     MockERC20 public usdc;
 
@@ -34,19 +32,16 @@ contract ISMPIntegrationTest is Test {
         // Deploy contracts with MockIsmpHost as the ISMP handler
         gateway = new IntentGateway(owner, address(ismpHost));
         settler = new IntentSettler(owner, address(ismpHost));
-        fallbackReceiver = new FallbackReceiver(owner, address(ismpHost));
 
         // Configure
         vm.startPrank(owner);
         gateway.addSupportedToken(address(usdc));
         settler.addSupportedToken(address(usdc));
-        fallbackReceiver.setDeliveryToken(address(usdc));
         vm.stopPrank();
 
         // Fund actors
         usdc.mint(alice, 10_000e6);
         usdc.mint(filler, 100_000e6);
-        usdc.mint(address(fallbackReceiver), 10_000e6);
 
         vm.prank(alice);
         usdc.approve(address(gateway), type(uint256).max);
@@ -117,51 +112,4 @@ contract ISMPIntegrationTest is Test {
         assertTrue(fill.settled);
     }
 
-    /// @notice Fallback flow: createOrder -> executeFallback -> ISMP FALLBACK_DELIVERY -> FallbackReceiver
-    function test_fallbackFlow() public {
-        // 1. Alice creates order (fee=0 is ok for fallback)
-        uint256 deadline = block.timestamp + 1 hours;
-        vm.prank(alice);
-        bytes32 orderId = gateway.createOrder(address(usdc), AMOUNT, DEST_CHAIN, alice, FEE, deadline);
-
-        // 2. Wait for filler window to expire
-        vm.warp(block.timestamp + Constants.FILLER_WINDOW + 1);
-
-        // 3. Execute fallback
-        gateway.executeFallback(orderId);
-
-        OrderLib.Order memory order = gateway.getOrder(orderId);
-        assertEq(uint8(order.status), uint8(OrderLib.OrderStatus.Fallback));
-
-        // 4. ISMP delivers FALLBACK_DELIVERY to FallbackReceiver
-        uint256 aliceBalBefore = usdc.balanceOf(alice);
-        ismpHost.deliverBridgeMessage(
-            address(fallbackReceiver), orderId, alice, AMOUNT, MessageType.FALLBACK_DELIVERY
-        );
-
-        // Alice received funds via fallback
-        assertEq(usdc.balanceOf(alice), aliceBalBefore + AMOUNT);
-        assertTrue(fallbackReceiver.delivered(orderId));
-    }
-
-    /// @notice Fallback double delivery prevention
-    function test_fallbackDoubleDelivery_reverts() public {
-        uint256 deadline = block.timestamp + 1 hours;
-        vm.prank(alice);
-        bytes32 orderId = gateway.createOrder(address(usdc), AMOUNT, DEST_CHAIN, alice, FEE, deadline);
-
-        vm.warp(block.timestamp + Constants.FILLER_WINDOW + 1);
-        gateway.executeFallback(orderId);
-
-        // First delivery succeeds
-        ismpHost.deliverBridgeMessage(
-            address(fallbackReceiver), orderId, alice, AMOUNT, MessageType.FALLBACK_DELIVERY
-        );
-
-        // Second delivery reverts
-        vm.expectRevert("Already delivered");
-        ismpHost.deliverBridgeMessage(
-            address(fallbackReceiver), orderId, alice, AMOUNT, MessageType.FALLBACK_DELIVERY
-        );
-    }
 }

@@ -4,6 +4,7 @@ import { config } from "./config.js";
 // IntentGateway ABI (events only)
 const GATEWAY_ABI = [
   "event OrderPlaced(bytes32 indexed orderId, address indexed user, address token, uint256 amount, uint32 destChain, address destAddress, uint256 feeOffer, uint256 deadline)",
+  "event PrivateOrderPlaced(bytes32 indexed orderId, address indexed user, address token, uint256 amount, uint32 destChain, bytes encryptedDest, uint256 feeOffer, uint256 deadline)",
   "function getActiveOrders() view returns (bytes32[])",
   "function getOrder(bytes32 orderId) view returns (tuple(bytes32 orderId, address user, address token, uint256 amount, uint32 destChain, address destAddress, uint256 feeOffer, uint256 deadline, uint256 createdAt, uint8 status))",
 ];
@@ -14,9 +15,11 @@ export interface OrderEvent {
   token: string;
   amount: bigint;
   destChain: number;
-  destAddress: string;
+  destAddress: string; // plaintext for public orders, empty for private
   feeOffer: bigint;
   deadline: bigint;
+  isPrivate: boolean;
+  encryptedDest?: string; // hex ECIES ciphertext (private orders only)
 }
 
 export type OrderHandler = (order: OrderEvent) => Promise<void>;
@@ -30,7 +33,6 @@ export class OrderWatcher {
   private seenOrders: Set<string> = new Set();
 
   constructor() {
-    // Watches EVM events on the source chain
     this.provider = new ethers.JsonRpcProvider(config.rpcSource);
     this.gateway = new ethers.Contract(config.intentGatewayAddress, GATEWAY_ABI, this.provider);
   }
@@ -40,15 +42,12 @@ export class OrderWatcher {
   }
 
   async start(): Promise<void> {
-    console.log("[Watcher] Listening for OrderPlaced events (polling mode)...");
+    console.log("[Watcher] Listening for OrderPlaced + PrivateOrderPlaced events (polling mode)...");
 
-    // Start from current block
     this.lastBlock = await this.provider.getBlockNumber();
     console.log(`[Watcher] Starting from block ${this.lastBlock}`);
 
-    // Poll every 4 seconds
     this.pollTimer = setInterval(() => this.poll(), 4000);
-    // Also poll immediately
     await this.poll();
   }
 
@@ -57,46 +56,78 @@ export class OrderWatcher {
       const currentBlock = await this.provider.getBlockNumber();
       if (currentBlock <= this.lastBlock) return;
 
-      const events = await this.gateway.queryFilter(
-        "OrderPlaced",
-        this.lastBlock + 1,
-        currentBlock
-      );
+      // Query public orders
+      const publicEvents = await this.gateway.queryFilter("OrderPlaced", this.lastBlock + 1, currentBlock);
+      for (const event of publicEvents) {
+        await this.handlePublicOrder(event as ethers.EventLog);
+      }
 
-      for (const event of events) {
-        const log = event as ethers.EventLog;
-        const orderId = log.args[0] as string;
-
-        // Skip already-seen orders
-        if (this.seenOrders.has(orderId)) continue;
-        this.seenOrders.add(orderId);
-
-        const order: OrderEvent = {
-          orderId,
-          user: log.args[1] as string,
-          token: log.args[2] as string,
-          amount: log.args[3] as bigint,
-          destChain: Number(log.args[4]),
-          destAddress: log.args[5] as string,
-          feeOffer: log.args[6] as bigint,
-          deadline: log.args[7] as bigint,
-        };
-
-        console.log(`[Watcher] New order detected: ${orderId}`);
-        console.log(`  User: ${order.user}, Amount: ${ethers.formatUnits(order.amount, 6)} USDC, Fee: ${ethers.formatUnits(order.feeOffer, 6)} USDC`);
-
-        for (const handler of this.handlers) {
-          try {
-            await handler(order);
-          } catch (err) {
-            console.error(`[Watcher] Handler error for order ${orderId}:`, err);
-          }
-        }
+      // Query private orders
+      const privateEvents = await this.gateway.queryFilter("PrivateOrderPlaced", this.lastBlock + 1, currentBlock);
+      for (const event of privateEvents) {
+        await this.handlePrivateOrder(event as ethers.EventLog);
       }
 
       this.lastBlock = currentBlock;
     } catch (err) {
       console.error("[Watcher] Poll error:", err);
+    }
+  }
+
+  private async handlePublicOrder(log: ethers.EventLog): Promise<void> {
+    const orderId = log.args[0] as string;
+    if (this.seenOrders.has(orderId)) return;
+    this.seenOrders.add(orderId);
+
+    const order: OrderEvent = {
+      orderId,
+      user: log.args[1] as string,
+      token: log.args[2] as string,
+      amount: log.args[3] as bigint,
+      destChain: Number(log.args[4]),
+      destAddress: log.args[5] as string,
+      feeOffer: log.args[6] as bigint,
+      deadline: log.args[7] as bigint,
+      isPrivate: false,
+    };
+
+    console.log(`[Watcher] Public order: ${orderId}`);
+    console.log(`  User: ${order.user}, Amount: ${ethers.formatUnits(order.amount, 6)} USDC, Fee: ${ethers.formatUnits(order.feeOffer, 6)} USDC`);
+
+    await this.dispatch(order);
+  }
+
+  private async handlePrivateOrder(log: ethers.EventLog): Promise<void> {
+    const orderId = log.args[0] as string;
+    if (this.seenOrders.has(orderId)) return;
+    this.seenOrders.add(orderId);
+
+    const order: OrderEvent = {
+      orderId,
+      user: log.args[1] as string,
+      token: log.args[2] as string,
+      amount: log.args[3] as bigint,
+      destChain: Number(log.args[4]),
+      destAddress: "", // unknown until TEE decrypts
+      feeOffer: log.args[6] as bigint,
+      deadline: log.args[7] as bigint,
+      isPrivate: true,
+      encryptedDest: log.args[5] as string,
+    };
+
+    console.log(`[Watcher] Private order: ${orderId}`);
+    console.log(`  User: ${order.user}, Amount: ${ethers.formatUnits(order.amount, 6)} USDC (dest encrypted)`);
+
+    await this.dispatch(order);
+  }
+
+  private async dispatch(order: OrderEvent): Promise<void> {
+    for (const handler of this.handlers) {
+      try {
+        await handler(order);
+      } catch (err) {
+        console.error(`[Watcher] Handler error for order ${order.orderId}:`, err);
+      }
     }
   }
 

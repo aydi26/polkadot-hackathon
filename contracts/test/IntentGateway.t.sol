@@ -155,33 +155,6 @@ contract IntentGatewayTest is Test {
         gateway.cancelOrder(orderId);
     }
 
-    // ──────────────────── executeFallback tests ────────────────────
-
-    function test_executeFallback() public {
-        uint256 deadline = block.timestamp + 1 hours;
-
-        vm.prank(alice);
-        bytes32 orderId = gateway.createOrder(address(usdc), AMOUNT, DEST_CHAIN, bob, FEE, deadline);
-
-        // Warp past filler window
-        vm.warp(block.timestamp + Constants.FILLER_WINDOW + 1);
-
-        gateway.executeFallback(orderId);
-
-        OrderLib.Order memory order = gateway.getOrder(orderId);
-        assertEq(uint8(order.status), uint8(OrderLib.OrderStatus.Fallback));
-    }
-
-    function test_executeFallback_revert_tooEarly() public {
-        uint256 deadline = block.timestamp + 1 hours;
-
-        vm.prank(alice);
-        bytes32 orderId = gateway.createOrder(address(usdc), AMOUNT, DEST_CHAIN, bob, FEE, deadline);
-
-        vm.expectRevert("Cannot fallback: not pending or filler window not expired");
-        gateway.executeFallback(orderId);
-    }
-
     // ──────────────────── getActiveOrders tests ────────────────────
 
     function test_getActiveOrders() public {
@@ -207,5 +180,54 @@ contract IntentGatewayTest is Test {
         vm.prank(alice);
         vm.expectRevert();
         gateway.createOrder(address(usdc), AMOUNT, DEST_CHAIN, bob, FEE, block.timestamp + 1 hours);
+    }
+
+    // ──────────────────── Private Order tests ────────────────────
+
+    function test_createPrivateOrder() public {
+        bytes memory encryptedDest = hex"deadbeef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
+        uint256 deadline = block.timestamp + 1 hours;
+
+        vm.prank(alice);
+        bytes32 orderId = gateway.createPrivateOrder(address(usdc), AMOUNT, DEST_CHAIN, encryptedDest, FEE, deadline);
+
+        OrderLib.Order memory order = gateway.getOrder(orderId);
+        assertEq(order.user, alice);
+        assertEq(order.amount, AMOUNT);
+        assertEq(order.destAddress, address(0)); // hidden
+        assertTrue(gateway.isPrivateOrder(orderId));
+        assertEq(gateway.getEncryptedDest(orderId), encryptedDest);
+    }
+
+    function test_createPrivateOrder_emitsEvent() public {
+        bytes memory encryptedDest = hex"cafebabe";
+        uint256 deadline = block.timestamp + 1 hours;
+
+        vm.prank(alice);
+        vm.expectEmit(false, true, false, false);
+        emit IIntentGateway.PrivateOrderPlaced(bytes32(0), alice, address(usdc), AMOUNT, DEST_CHAIN, encryptedDest, FEE, deadline);
+        gateway.createPrivateOrder(address(usdc), AMOUNT, DEST_CHAIN, encryptedDest, FEE, deadline);
+    }
+
+    function test_privateOrder_canCancel() public {
+        bytes memory encryptedDest = hex"deadbeef";
+        uint256 deadline = block.timestamp + 1 hours;
+
+        vm.prank(alice);
+        bytes32 orderId = gateway.createPrivateOrder(address(usdc), AMOUNT, DEST_CHAIN, encryptedDest, FEE, deadline);
+
+        // Warp past deadline
+        vm.warp(deadline + 1);
+
+        vm.prank(alice);
+        gateway.cancelOrder(orderId);
+        assertEq(uint8(gateway.getOrder(orderId).status), uint8(OrderLib.OrderStatus.Cancelled));
+    }
+
+    function test_setTEEEncryptionPubKey() public {
+        bytes memory pubKey = hex"0201020304050607080910111213141516171819202122232425262728293031ff";
+        vm.prank(owner);
+        gateway.setTEEEncryptionPubKey(pubKey);
+        assertEq(gateway.teeEncryptionPubKey(), pubKey);
     }
 }

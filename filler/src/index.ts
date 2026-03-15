@@ -5,6 +5,8 @@ import { SettlementMonitor } from "./settler.js";
 import { PricingEngine } from "./pricing.js";
 import { FillerState, FillStatus } from "./state.js";
 import { CrossChainRelay } from "./relay.js";
+import { TEEClient } from "./tee.js";
+import { PoolWatcher } from "./pool-watcher.js";
 import { ethers } from "ethers";
 
 async function main() {
@@ -13,6 +15,26 @@ async function main() {
 
   // Validate config
   validateConfig();
+
+  // Initialize TEE client (derives anonymous wallet in dstack/simulator mode)
+  const teeClient = await TEEClient.create(config.teeMode, {
+    endpoint: config.teeEndpoint || undefined,
+    privateKey: config.teePrivateKey || undefined,
+  });
+
+  // Get the TEE-derived wallet (anonymous intermediary for fills)
+  const teeWallet = teeClient.getFillerWallet() || undefined;
+
+  if (teeWallet) {
+    console.log();
+    console.log(`TEE Mode:       ${config.teeMode}`);
+    console.log(`TEE Wallet:     ${teeWallet.address} (anonymous intermediary)`);
+    if (config.teeMode === "dstack") {
+      console.log(`TEE Transport:  Unix socket (/var/run/dstack.sock)`);
+    } else if (config.teeMode === "simulator") {
+      console.log(`TEE Transport:  HTTP (${config.teeEndpoint})`);
+    }
+  }
 
   // Initialize state tracker
   const state = new FillerState();
@@ -27,14 +49,17 @@ async function main() {
   const settlers = new Map<number, SettlementMonitor>();
 
   const destChains = getSupportedDestChains();
+  console.log();
   console.log(`Configured destination chains: ${destChains.join(", ")}`);
   console.log();
 
   for (const chainId of destChains) {
     const destConfig = config.destinations[chainId];
-    executors.set(chainId, new OrderExecutor(destConfig));
+    // Inject TEE wallet + TEE client (for ECIES decryption + fillId generation)
+    executors.set(chainId, new OrderExecutor(destConfig, teeWallet, teeClient.isEnabled ? teeClient : undefined));
     relays.set(chainId, new CrossChainRelay(state, destConfig));
-    settlers.set(chainId, new SettlementMonitor(state, destConfig));
+    // Pass TEE client to settler for attestation generation
+    settlers.set(chainId, new SettlementMonitor(state, destConfig, teeClient.isEnabled ? teeClient : undefined));
   }
 
   // Log filler info per chain
@@ -61,8 +86,11 @@ async function main() {
       return;
     }
 
-    // Track the order
-    state.track(order.orderId, order.amount, order.feeOffer, order.destChain);
+    // Track the order + pre-compute fillId for private orders (before fill TX, so relay can find it)
+    state.track(order.orderId, order.amount, order.feeOffer, order.destChain, order.isPrivate);
+    if (order.isPrivate && teeClient.isEnabled) {
+      state.updateFillId(order.orderId, teeClient.computeFillId(order.orderId));
+    }
 
     const currentBalance = await executor.getBalance();
 
@@ -79,11 +107,13 @@ async function main() {
     // Fill the order with retry
     state.updateStatus(order.orderId, FillStatus.FILLING);
     console.log(`[Main] Routing order to ${executor.getChainName()} (chain ${order.destChain})`);
-    const txHash = await executor.fillWithRetry(order);
-    if (txHash) {
-      state.markFilled(order.orderId, txHash);
+    const result = await executor.fillWithRetry(order);
+    if (result) {
+      state.markFilled(order.orderId, result.txHash);
+      state.updateFillId(order.orderId, result.fillId);
       console.log(`[Main] Successfully filled order ${order.orderId}`);
       console.log(`  Expected profit: ${ethers.formatUnits(decision.expectedProfit, 6)} USDC`);
+      if (order.isPrivate) console.log(`  Privacy: fillId ${result.fillId.slice(0, 10)}... (unlinkable)`);
     } else {
       state.markFailed(order.orderId, "Fill failed after retries");
     }
@@ -93,6 +123,12 @@ async function main() {
   await watcher.start();
   for (const settler of settlers.values()) await settler.start();
   for (const relay of relays.values()) await relay.start();
+
+  // Start PrivacyPool watcher (auto-triggers withdraw when time-lock expires)
+  if (config.privacyPoolAddress && teeClient.isEnabled) {
+    const poolWatcher = new PoolWatcher(teeClient, config.privacyPoolAddress);
+    await poolWatcher.start();
+  }
 
   // Periodic stats logging
   setInterval(() => {

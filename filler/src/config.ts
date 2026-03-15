@@ -1,4 +1,5 @@
 import "dotenv/config";
+import type { TEEMode } from "./tee.js";
 
 // ──────────────────── Per-Destination Chain Config ────────────────────
 export interface DestChainConfig {
@@ -89,8 +90,13 @@ export const config = {
   // Auto-settlement configuration
   autoSettleDelayMs: Number(process.env.AUTO_SETTLE_DELAY_MS || "30000"), // 30s delay before auto-settling
 
-  // TEE configuration
-  teePrivateKey: process.env.TEE_PRIVATE_KEY || "",
+  // PrivacyPool address (source chain)
+  privacyPoolAddress: process.env.PRIVACY_POOL_ADDRESS || "",
+
+  // TEE configuration (dstack / simulator / mock)
+  teeMode: (process.env.TEE_MODE || "mock") as TEEMode,
+  teeEndpoint: process.env.TEE_ENDPOINT || "", // simulator: http://localhost:8090
+  teePrivateKey: process.env.TEE_PRIVATE_KEY || "", // mock mode only
   teeAutoSettleDelayMs: Number(process.env.TEE_AUTO_SETTLE_DELAY_MS || "5000"), // 5s for TEE fast path
 
   // Retry configuration
