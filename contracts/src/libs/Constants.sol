@@ -9,9 +9,6 @@ library Constants {
     /// @notice Maximum fee in basis points (100 bps = 1%)
     uint256 constant MAX_FEE_BPS = 100;
 
-    /// @notice Filler window in seconds — time fillers have to fill before fallback
-    uint256 constant FILLER_WINDOW = 30;
-
     /// @notice Settlement timeout in seconds (1 hour)
     uint256 constant SETTLEMENT_TIMEOUT = 3600;
 

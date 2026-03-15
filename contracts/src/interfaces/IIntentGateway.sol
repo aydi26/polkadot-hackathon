@@ -23,7 +23,16 @@ interface IIntentGateway {
 
     event EscrowReleased(bytes32 indexed orderId, address indexed fillerAddress, uint256 amount, uint256 fee);
 
-    event FallbackExecuted(bytes32 indexed orderId, address indexed user, uint256 amount, address destAddress);
+    event PrivateOrderPlaced(
+        bytes32 indexed orderId,
+        address indexed user,
+        address token,
+        uint256 amount,
+        uint32 destChain,
+        bytes encryptedDest,
+        uint256 feeOffer,
+        uint256 deadline
+    );
 
     // ──────────────────────────── Functions ────────────────────────────
 
@@ -39,9 +48,6 @@ interface IIntentGateway {
 
     /// @notice Release escrowed funds to the filler after ZK proof verification
     function releaseEscrow(bytes32 orderId, address fillerAddress, bytes calldata proof) external;
-
-    /// @notice Execute fallback bridge when no filler is available after FILLER_WINDOW
-    function executeFallback(bytes32 orderId) external;
 
     /// @notice Cancel an order after deadline if still pending
     function cancelOrder(bytes32 orderId) external;

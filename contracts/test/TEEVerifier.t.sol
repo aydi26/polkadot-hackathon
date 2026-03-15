@@ -27,13 +27,22 @@ contract TEEVerifierTest is Test {
         view
         returns (ITEEVerifier.TEEAttestation memory)
     {
+        return _makeAttestationWithQuoteHash(orderId, filler, amount, bytes32(0));
+    }
+
+    function _makeAttestationWithQuoteHash(bytes32 orderId, address filler, uint256 amount, bytes32 tdxQuoteHash)
+        internal
+        view
+        returns (ITEEVerifier.TEEAttestation memory)
+    {
         return ITEEVerifier.TEEAttestation({
             orderId: orderId,
             filler: filler,
             amount: amount,
             escrowContract: address(0x1234),
             escrowChainId: 420420417,
-            timestamp: block.timestamp
+            timestamp: block.timestamp,
+            tdxQuoteHash: tdxQuoteHash
         });
     }
 
@@ -44,7 +53,8 @@ contract TEEVerifierTest is Test {
     {
         bytes32 attestationHash = keccak256(abi.encode(
             att.orderId, att.filler, att.amount,
-            att.escrowContract, att.escrowChainId, att.timestamp
+            att.escrowContract, att.escrowChainId, att.timestamp,
+            att.tdxQuoteHash
         ));
         bytes32 ethSignedHash = keccak256(abi.encodePacked(
             "\x19Ethereum Signed Message:\n32", attestationHash
@@ -107,6 +117,55 @@ contract TEEVerifierTest is Test {
 
         bool valid = verifier.verifyAttestation(att, sig);
         assertTrue(valid);
+    }
+
+    function test_validAttestationWithTDXQuoteHash() public {
+        bytes32 orderId = keccak256("order1");
+        bytes32 quoteHash = keccak256("fake-tdx-quote-data");
+        ITEEVerifier.TEEAttestation memory att = _makeAttestationWithQuoteHash(orderId, makeAddr("bob"), 500e6, quoteHash);
+        bytes memory sig = _signAttestation(att, enclaveKey);
+
+        bool valid = verifier.verifyAttestation(att, sig);
+        assertTrue(valid);
+    }
+
+    // ──────────────────── Verify With Quote ────────────────────
+
+    function test_verifyAttestationWithQuote() public {
+        bytes memory tdxQuote = hex"deadbeef0123456789abcdef";
+        bytes32 quoteHash = keccak256(tdxQuote);
+
+        bytes32 orderId = keccak256("order1");
+        ITEEVerifier.TEEAttestation memory att = _makeAttestationWithQuoteHash(orderId, makeAddr("bob"), 500e6, quoteHash);
+        bytes memory sig = _signAttestation(att, enclaveKey);
+
+        bool valid = verifier.verifyAttestationWithQuote(att, sig, tdxQuote);
+        assertTrue(valid);
+    }
+
+    function test_tdxQuoteHashMismatch() public {
+        bytes memory tdxQuote = hex"deadbeef";
+        bytes32 wrongHash = keccak256("wrong-data");
+
+        bytes32 orderId = keccak256("order1");
+        ITEEVerifier.TEEAttestation memory att = _makeAttestationWithQuoteHash(orderId, makeAddr("bob"), 500e6, wrongHash);
+        bytes memory sig = _signAttestation(att, enclaveKey);
+
+        vm.expectRevert("TDX quote hash mismatch");
+        verifier.verifyAttestationWithQuote(att, sig, tdxQuote);
+    }
+
+    function test_TDXQuoteRecordedEvent() public {
+        bytes memory tdxQuote = hex"cafebabe";
+        bytes32 quoteHash = keccak256(tdxQuote);
+        bytes32 orderId = keccak256("order1");
+
+        ITEEVerifier.TEEAttestation memory att = _makeAttestationWithQuoteHash(orderId, makeAddr("bob"), 500e6, quoteHash);
+        bytes memory sig = _signAttestation(att, enclaveKey);
+
+        vm.expectEmit(true, false, false, true);
+        emit TEEVerifier.TDXQuoteRecorded(orderId, quoteHash);
+        verifier.verifyAttestationWithQuote(att, sig, tdxQuote);
     }
 
     // ──────────────────── Replay Protection ────────────────────

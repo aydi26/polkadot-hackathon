@@ -100,23 +100,26 @@ export class CrossChainRelay {
     }
   }
 
-  /** Relay FILL_CONFIRMATION: call markOrderFilled on source chain */
-  private async relayFillConfirmation(orderId: string): Promise<void> {
+  /** Relay FILL_CONFIRMATION: map fillId → sourceOrderId, call markOrderFilled on source */
+  private async relayFillConfirmation(fillId: string): Promise<void> {
     try {
+      // For private orders, fillId != sourceOrderId. Look up the mapping from state.
+      const record = this.state.findByFillId(fillId);
+      const sourceOrderId = record?.orderId || fillId; // fallback for public orders
+
       // Check if order is still Pending on source chain (status = 1)
-      const order = await this.gateway.getOrder(orderId);
+      const order = await this.gateway.getOrder(sourceOrderId);
       if (Number(order.status) !== 1) {
-        console.log(`[Relay:${this.destConfig.chainId}] Order ${orderId.slice(0, 10)}... already status=${order.status}, skipping`);
+        console.log(`[Relay:${this.destConfig.chainId}] Order ${sourceOrderId.slice(0, 10)}... already status=${order.status}, skipping`);
         return;
       }
 
-      console.log(`[Relay:${this.destConfig.chainId}] Relaying FILL_CONFIRMATION to source chain...`);
-      const tx = await this.gateway.markOrderFilled(orderId);
+      console.log(`[Relay:${this.destConfig.chainId}] Relaying FILL_CONFIRMATION to source chain (sourceOrderId: ${sourceOrderId.slice(0, 10)}...)...`);
+      const tx = await this.gateway.markOrderFilled(sourceOrderId);
       const receipt = await tx.wait();
       console.log(`[Relay:${this.destConfig.chainId}] markOrderFilled TX: ${receipt.hash}`);
-      console.log(`[Relay:${this.destConfig.chainId}] Order ${orderId.slice(0, 10)}... now Filled on source chain`);
     } catch (err) {
-      console.error(`[Relay:${this.destConfig.chainId}] Failed to relay for ${orderId.slice(0, 10)}...:`, err);
+      console.error(`[Relay:${this.destConfig.chainId}] Failed to relay for ${fillId.slice(0, 10)}...:`, err);
     }
   }
 

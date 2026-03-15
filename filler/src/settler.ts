@@ -7,6 +7,7 @@ import { TEEClient } from "./tee.js";
 const SETTLER_ABI = [
   "function verifySettlement(bytes32 orderId, bytes proof) external",
   "function verifyTEESettlement(bytes32 orderId, bytes teeAttestation, bytes signature) external",
+  "function verifyTEESettlementWithQuote(bytes32 orderId, bytes teeAttestation, bytes signature, bytes tdxQuote) external",
   "function getPendingSettlements() view returns (bytes32[])",
   "function getFill(bytes32 orderId) view returns (tuple(bytes32 orderId, address filler, address recipient, address token, uint256 amount, uint256 fillTimestamp, bool settled))",
   "event SettlementVerified(bytes32 indexed orderId, address indexed filler, bytes32 proofHash)",
@@ -34,30 +35,28 @@ export class SettlementMonitor {
   private settledOrders: Set<string> = new Set();
   private teeClient?: TEEClient;
 
-  constructor(state: FillerState, destConfig: DestChainConfig) {
+  constructor(state: FillerState, destConfig: DestChainConfig, teeClient?: TEEClient) {
     this.state = state;
     this.destConfig = destConfig;
+    this.teeClient = teeClient;
 
     // Destination chain (where fills happen)
     this.destProvider = new ethers.JsonRpcProvider(destConfig.rpc);
-    this.destWallet = new ethers.Wallet(config.fillerPrivateKey, this.destProvider);
+    // Use TEE-derived wallet if available (anonymous intermediary)
+    const teeWallet = teeClient?.getFillerWallet(this.destProvider);
+    this.destWallet = teeWallet || new ethers.Wallet(config.fillerPrivateKey, this.destProvider);
     this.settler = new ethers.Contract(destConfig.intentSettlerAddress, SETTLER_ABI, this.destWallet);
 
     // Source chain (where escrow lives)
     this.sourceProvider = new ethers.JsonRpcProvider(config.rpcSource);
     this.sourceWallet = new ethers.Wallet(config.fillerPrivateKey, this.sourceProvider);
     this.gateway = new ethers.Contract(config.intentGatewayAddress, GATEWAY_ABI, this.sourceWallet);
-
-    // TEE client (if enabled for this destination)
-    if (destConfig.teeEnabled) {
-      this.teeClient = new TEEClient(undefined, config.teePrivateKey);
-    }
   }
 
   async start(): Promise<void> {
     this.monitoring = true;
     const settleDelay = this.teeClient?.isEnabled ? config.teeAutoSettleDelayMs : config.autoSettleDelayMs;
-    const mode = this.teeClient?.isEnabled ? "TEE (Phala)" : "BEEFY";
+    const mode = this.teeClient?.isEnabled ? `TEE (Phala dstack, ${config.teeMode})` : "BEEFY";
     console.log(`[Settler:${this.destConfig.chainId}] Monitoring pending settlements for ${this.destConfig.name}...`);
     console.log(`[Settler:${this.destConfig.chainId}] Settlement mode: ${mode}, delay: ${settleDelay}ms`);
 
@@ -96,84 +95,63 @@ export class SettlementMonitor {
     }
   }
 
-  /** Execute auto-settlement: branch between TEE (fast) and BEEFY (fallback) */
+  /** Execute auto-settlement via TEE */
   private async autoSettle(orderId: string, fillerAddress: string): Promise<void> {
-    if (this.teeClient?.isEnabled) {
-      await this.autoSettleTEE(orderId, fillerAddress);
-    } else {
-      await this.autoSettleBEEFY(orderId, fillerAddress);
-    }
+    await this.autoSettleTEE(orderId, fillerAddress);
   }
 
-  /** TEE fast path: request attestation from Phala enclave, verify on-chain (~5-10s) */
-  private async autoSettleTEE(orderId: string, fillerAddress: string): Promise<void> {
+  /** TEE fast path: dual attestation for privacy (fillId on dest, sourceOrderId on source) */
+  private async autoSettleTEE(fillId: string, fillerAddress: string): Promise<void> {
     const tag = `[Settler:${this.destConfig.chainId}:TEE]`;
-    console.log(`${tag} Auto-settling order ${orderId.slice(0, 10)}... via TEE`);
-    this.state.updateStatus(orderId, FillStatus.SETTLING, { settlementMethod: "tee" });
+
+    // Look up sourceOrderId from state (for private orders, fillId != sourceOrderId)
+    const record = this.state.findByFillId(fillId);
+    const sourceOrderId = record?.orderId || fillId; // fallback for public orders
+
+    console.log(`${tag} Auto-settling fillId ${fillId.slice(0, 10)}... via TEE (${config.teeMode})`);
+    this.state.updateStatus(sourceOrderId, FillStatus.SETTLING, { settlementMethod: "tee" });
 
     try {
-      // Step 1: Request TEE attestation
-      console.log(`${tag}   Step 1/3: Requesting TEE attestation...`);
-      const { encodedAttestation, signature } = await this.teeClient!.requestAttestation(
-        orderId,
-        fillerAddress,
-        0n, // amount — read from fill in production
-        config.intentGatewayAddress,
-        420420417 // Polkadot Hub Testnet chain ID
+      // Step 1: Request DESTINATION attestation (uses fillId — unlinkable)
+      console.log(`${tag}   Step 1/4: Requesting dest TEE attestation (fillId)...`);
+      const destAtt = await this.teeClient!.requestAttestation(
+        fillId, fillerAddress, 0n, config.intentGatewayAddress, 420420417
       );
 
-      // Step 2: Verify TEE settlement on destination chain
-      console.log(`${tag}   Step 2/3: verifyTEESettlement on destination...`);
-      const settleTx = await this.settler.verifyTEESettlement(orderId, encodedAttestation, signature);
+      // Step 2: Verify TEE settlement on destination using fillId
+      console.log(`${tag}   Step 2/4: verifyTEESettlement on destination...`);
+      let settleTx;
+      if (destAtt.tdxQuote) {
+        settleTx = await this.settler.verifyTEESettlementWithQuote(fillId, destAtt.encodedAttestation, destAtt.signature, destAtt.tdxQuote);
+      } else {
+        settleTx = await this.settler.verifyTEESettlement(fillId, destAtt.encodedAttestation, destAtt.signature);
+      }
       const settleReceipt = await settleTx.wait();
       console.log(`${tag}   TEE settlement verified! TX: ${settleReceipt.hash}`);
-      this.state.markSettled(orderId, settleReceipt.hash);
-      this.settledOrders.add(orderId);
-
-      // Step 3: Release escrow on source chain
-      console.log(`${tag}   Step 3/3: releaseEscrow on source...`);
-      const releaseTx = await this.gateway.releaseEscrow(orderId, fillerAddress, encodedAttestation);
-      const releaseReceipt = await releaseTx.wait();
-      console.log(`${tag}   Escrow released! TX: ${releaseReceipt.hash}`);
-      this.state.markReleased(orderId, releaseReceipt.hash);
-
-      console.log(`${tag} === Order ${orderId.slice(0, 10)}... fully settled via TEE ===`);
+      this.state.markSettled(sourceOrderId, settleReceipt.hash);
+      this.settledOrders.add(fillId);
     } catch (err) {
-      console.error(`${tag} TEE settle failed for ${orderId.slice(0, 10)}..., falling back to BEEFY:`, err);
-      // Fallback to BEEFY if TEE fails
-      await this.autoSettleBEEFY(orderId, fillerAddress);
+      console.error(`${tag} TEE dest settlement failed for ${fillId.slice(0, 10)}...:`, err);
+      this.state.markFailed(sourceOrderId, String(err));
+      return;
     }
-  }
 
-  /** BEEFY fallback: dummy proof settlement (~6-8min in production) */
-  private async autoSettleBEEFY(orderId: string, fillerAddress: string): Promise<void> {
-    const tag = `[Settler:${this.destConfig.chainId}:BEEFY]`;
-    console.log(`${tag} Auto-settling order ${orderId.slice(0, 10)}... via BEEFY`);
-    this.state.updateStatus(orderId, FillStatus.SETTLING, { settlementMethod: "beefy" });
-
-    // Dummy proof (hackathon placeholder -- in production this is the ZK BEEFY proof)
-    const dummyProof = ethers.solidityPacked(["bytes32"], [ethers.id("settlement-proof")]);
-
+    // Step 3-4: Release escrow on source (separate try/catch — don't re-settle dest on failure)
     try {
-      // Step 1: Verify settlement on destination chain
-      console.log(`${tag}   Step 1/2: verifySettlement on destination...`);
-      const settleTx = await this.settler.verifySettlement(orderId, dummyProof);
-      const settleReceipt = await settleTx.wait();
-      console.log(`${tag}   Settlement verified! TX: ${settleReceipt.hash}`);
-      this.state.markSettled(orderId, settleReceipt.hash);
-      this.settledOrders.add(orderId);
+      console.log(`${tag}   Step 3/4: Requesting source TEE attestation (sourceOrderId)...`);
+      const sourceAtt = await this.teeClient!.requestAttestation(
+        sourceOrderId, fillerAddress, 0n, config.intentGatewayAddress, 420420417
+      );
 
-      // Step 2: Release escrow on source chain
-      console.log(`${tag}   Step 2/2: releaseEscrow on source...`);
-      const releaseTx = await this.gateway.releaseEscrow(orderId, fillerAddress, dummyProof);
+      console.log(`${tag}   Step 4/4: releaseEscrow on source...`);
+      const releaseTx = await this.gateway.releaseEscrow(sourceOrderId, fillerAddress, sourceAtt.encodedAttestation);
       const releaseReceipt = await releaseTx.wait();
       console.log(`${tag}   Escrow released! TX: ${releaseReceipt.hash}`);
-      this.state.markReleased(orderId, releaseReceipt.hash);
+      this.state.markReleased(sourceOrderId, releaseReceipt.hash);
 
-      console.log(`${tag} === Order ${orderId.slice(0, 10)}... fully settled via BEEFY ===`);
+      console.log(`${tag} === Order ${sourceOrderId.slice(0, 10)}... fully settled via TEE (${config.teeMode}) ===`);
     } catch (err) {
-      console.error(`${tag} Auto-settle failed for ${orderId.slice(0, 10)}...:`, err);
-      this.state.markFailed(orderId, String(err));
+      console.error(`${tag} Escrow release failed for ${sourceOrderId.slice(0, 10)}... (dest already settled, will retry):`, err);
     }
   }
 

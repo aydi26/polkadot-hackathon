@@ -11,10 +11,12 @@ export enum FillStatus {
 
 export interface FillRecord {
   orderId: string;
+  fillId: string; // fillId on destination (== orderId for public orders)
   destChain: number;
   status: FillStatus;
   amount: bigint;
   feeOffer: bigint;
+  isPrivate: boolean;
   settlementMethod?: "beefy" | "tee";
   fillTxHash?: string;
   settleTxHash?: string;
@@ -29,15 +31,30 @@ export interface FillRecord {
 export class FillerState {
   private records: Map<string, FillRecord> = new Map();
 
-  track(orderId: string, amount: bigint, feeOffer: bigint, destChain: number = 0): void {
+  track(orderId: string, amount: bigint, feeOffer: bigint, destChain: number = 0, isPrivate: boolean = false): void {
     this.records.set(orderId, {
       orderId,
+      fillId: orderId, // default: same as orderId, updated after fill for private orders
       destChain,
       status: FillStatus.DETECTED,
       amount,
       feeOffer,
+      isPrivate,
       detectedAt: Date.now(),
     });
+  }
+
+  updateFillId(orderId: string, fillId: string): void {
+    const record = this.records.get(orderId);
+    if (record) record.fillId = fillId;
+  }
+
+  findByFillId(fillId: string): FillRecord | undefined {
+    return Array.from(this.records.values()).find((r) => r.fillId === fillId);
+  }
+
+  getAllRecords(): FillRecord[] {
+    return Array.from(this.records.values());
   }
 
   updateStatus(orderId: string, status: FillStatus, extra?: Partial<FillRecord>): void {

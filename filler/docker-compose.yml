@@ -1,0 +1,16 @@
+# Local development with dstack simulator
+# Usage: docker compose up
+services:
+  dstack-simulator:
+    image: phalanetwork/tappd-simulator:latest
+    ports:
+      - "8090:8090"
+
+  filler:
+    build: .
+    depends_on:
+      - dstack-simulator
+    env_file: .env
+    environment:
+      TEE_MODE: simulator
+      TEE_ENDPOINT: http://dstack-simulator:8090

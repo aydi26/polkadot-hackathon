@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { motion, useAnimation } from "motion/react";
 import {
   useAccount,
   useConnect,
@@ -9,26 +10,26 @@ import {
   useWaitForTransactionReceipt,
 } from "wagmi";
 import { polkadotHubTestnet, arbitrumSepolia } from "../config/wagmi";
-import { parseUnits, formatUnits } from "viem";
+import { parseUnits, formatUnits, keccak256, encodePacked } from "viem";
 import {
   INTENT_GATEWAY_ADDRESS,
   USDC_ADDRESS,
   INTENT_GATEWAY_ABI,
   INTENT_SETTLER_ABI,
   ERC20_ABI,
+  PRIVACY_POOL_ADDRESS,
+  PRIVACY_POOL_ABI,
   CHAINS,
   DEST_CHAINS,
   MIN_FEE_BPS,
   MAX_FEE_BPS,
   BPS_DENOMINATOR,
-  FILLER_WINDOW,
   SOURCE_CHAIN_ID,
   DEST_CHAIN_ID,
   OrderStatus,
   ORDER_STATUS_LABELS,
   HL_BRIDGE_ADDRESS,
 } from "../config/contracts";
-import ElasticSlider from "./ElasticSlider";
 import polkadotDotLogo from "../assets svg/polkadot-new-dot-logo.svg";
 import "./BridgeWidget.css";
 
@@ -78,11 +79,29 @@ const ChevronDownIcon = ({ size = 12 }) => (
   </svg>
 );
 
-const SettingsIcon = () => (
-  <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
-    <path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6" />
-  </svg>
-);
+const SettingsIcon = ({ size = 20 }) => {
+  const controls = useAnimation();
+  return (
+    <motion.svg
+      animate={controls}
+      onMouseEnter={() => controls.start({ rotate: 180 })}
+      onMouseLeave={() => controls.start({ rotate: 0 })}
+      fill="none"
+      height={size}
+      width={size}
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="2"
+      transition={{ type: "spring", stiffness: 50, damping: 10 }}
+      viewBox="0 0 24 24"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
+      <circle cx="12" cy="12" r="3" />
+    </motion.svg>
+  );
+};
 
 const ArrowDownIcon = () => (
   <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
@@ -138,18 +157,25 @@ const CopyButton = ({ text }) => {
 /* ===== STEPS ===== */
 const STEPS_INSTANT = [
   { key: "approve", label: "Approve USDC" },
-  { key: "create", label: "Create Order" },
+  { key: "create", label: "Deposit to Pool" },
+  { key: "pool_waiting", label: "Privacy Lock" },
   { key: "fill", label: "Filler Delivery" },
   { key: "settle", label: "Settlement" },
   { key: "deposit_hl", label: "Deposit to HL" },
 ];
 
-const STEPS_CLASSIC = [
-  { key: "approve", label: "Approve USDC" },
-  { key: "create", label: "Create Order" },
-  { key: "fallback", label: "Fallback Bridge" },
-  { key: "settle", label: "ZK BEEFY Settlement" },
-  { key: "deposit_hl", label: "Deposit to HL" },
+const STANDARD_AMOUNTS = [
+  { value: "6", label: "6" },
+  { value: "7", label: "7" },
+  { value: "8", label: "8" },
+  { value: "9", label: "9" },
+  { value: "10", label: "10" },
+];
+const DELIVERY_DELAYS = [
+  { label: "Instant", seconds: 0 },
+  { label: "15s", seconds: 15 },
+  { label: "30s", seconds: 30 },
+  { label: "1 min", seconds: 60 },
 ];
 
 export default function BridgeWidget() {
@@ -160,11 +186,22 @@ export default function BridgeWidget() {
   const isWrongChain = isConnected && chainId !== SOURCE_CHAIN_ID;
 
   // UI state
-  const [bridgeMode, setBridgeMode] = useState("instant");
   const [amount, setAmount] = useState("");
   const [showRecipient, setShowRecipient] = useState(false);
+
+  // Auto-open destination address when amount is filled
+  useEffect(() => {
+    if (amount && parseFloat(amount) > 0) {
+      setShowRecipient(true);
+    }
+  }, [amount]);
   const [destAddress, setDestAddress] = useState("");
   const [feeBps, setFeeBps] = useState(10);
+  const [deliveryDelay, setDeliveryDelay] = useState(0); // seconds until HL deposit
+  const [customDelay, setCustomDelay] = useState(""); // custom delay input
+  const [countdown, setCountdown] = useState(0); // remaining seconds for delayed delivery
+  const [countdownActive, setCountdownActive] = useState(false);
+  const [isOrderSettled, setIsOrderSettled] = useState(false); // tracks if settlement is done
   const [step, setStep] = useState("input");
   const [error, setError] = useState(null);
   const [failedAt, setFailedAt] = useState(null);
@@ -172,6 +209,10 @@ export default function BridgeWidget() {
   const [activeTab, setActiveTab] = useState("bridge");
   const [selectedDestChain, setSelectedDestChain] = useState(DEST_CHAIN_ID);
   const [showDestPicker, setShowDestPicker] = useState(false);
+
+  // Privacy pool state
+  const [poolSecret, setPoolSecret] = useState(null); // bytes32 random secret
+  const [commitmentHash, setCommitmentHash] = useState(null);
 
   // Track tab state
   const [trackInput, setTrackInput] = useState("");
@@ -199,12 +240,12 @@ export default function BridgeWidget() {
     query: { enabled: !!address },
   });
 
-  // Read USDC allowance for gateway
+  // Read USDC allowance for PrivacyPool
   const { data: usdcAllowance, refetch: refetchAllowance } = useReadContract({
     address: USDC_ADDRESS,
     abi: ERC20_ABI,
     functionName: "allowance",
-    args: address ? [address, INTENT_GATEWAY_ADDRESS] : undefined,
+    args: address ? [address, PRIVACY_POOL_ADDRESS] : undefined,
     query: { enabled: !!address },
   });
 
@@ -289,56 +330,104 @@ export default function BridgeWidget() {
 
   // Track orderId from createOrder tx logs
   const [orderId, setOrderId] = useState(null);
+  const [fillerWithdrawTxHash, setFillerWithdrawTxHash] = useState(null);
 
   // Computed values
   const amountWei = amount ? parseUnits(amount, 6) : 0n;
   const feeAmount =
-    bridgeMode === "instant" && amountWei > 0n
+    amountWei > 0n
       ? (amountWei * BigInt(feeBps)) / BigInt(BPS_DENOMINATOR)
       : 0n;
   const receiveAmount = amountWei > 0n ? amountWei - feeAmount : 0n;
   const deadline = BigInt(Math.floor(Date.now() / 1000) + 3600);
 
+  // Read TEE encryption public key from contract (for private orders)
+  const { data: teePubKey } = useReadContract({
+    address: INTENT_GATEWAY_ADDRESS,
+    abi: INTENT_GATEWAY_ABI,
+    functionName: "teeEncryptionPubKey",
+  });
+
+  // All orders are anonymous — deposit into PrivacyPool with encrypted dest
+  const submitOrder = async () => {
+    const recipient = destAddress || address;
+    // Generate random secret
+    const secretBytes = crypto.getRandomValues(new Uint8Array(32));
+    const secret = "0x" + Array.from(secretBytes).map(b => b.toString(16).padStart(2, '0')).join('');
+    const commitment = keccak256(encodePacked(["bytes32"], [secret]));
+    setPoolSecret(secret);
+    setCommitmentHash(commitment);
+    // Store secret in localStorage for recovery
+    localStorage.setItem(`velora_secret_${commitment}`, secret);
+
+    // Encrypt destAddress and secret with TEE pubkey
+    if (teePubKey && teePubKey !== "0x") {
+      try {
+        const { encrypt } = await import("eciesjs");
+        const addrBytes = Buffer.from(recipient.slice(2), "hex"); // 20 bytes
+        const pubKeyHex = teePubKey.startsWith("0x") ? teePubKey.slice(2) : teePubKey;
+        const encryptedDest = encrypt(pubKeyHex, addrBytes);
+        const encryptedDestHex = "0x" + Buffer.from(encryptedDest).toString("hex");
+
+        // Encrypt the secret too (TEE will decrypt it to trigger withdraw)
+        const secretBytes = Buffer.from(secret.slice(2), "hex"); // 32 bytes
+        const encryptedSecretBytes = encrypt(pubKeyHex, secretBytes);
+        const encryptedSecretHex = "0x" + Buffer.from(encryptedSecretBytes).toString("hex");
+
+        createOrder({
+          address: PRIVACY_POOL_ADDRESS,
+          abi: PRIVACY_POOL_ABI,
+          functionName: "deposit",
+          args: [amountWei, commitment, encryptedDestHex, encryptedSecretHex, BigInt(deliveryDelay)],
+        });
+      } catch (err) {
+        console.warn("ECIES encryption failed:", err);
+        // Fallback: use unencrypted address and secret as bytes
+        const fallbackDest = "0x" + recipient.slice(2).padStart(40, '0');
+        const fallbackSecret = secret; // already 0x-prefixed bytes32
+        createOrder({
+          address: PRIVACY_POOL_ADDRESS,
+          abi: PRIVACY_POOL_ABI,
+          functionName: "deposit",
+          args: [amountWei, commitment, fallbackDest, fallbackSecret, BigInt(deliveryDelay)],
+        });
+      }
+    } else {
+      // TEE pubkey not yet set — use unencrypted address and secret as bytes
+      const fallbackDest = "0x" + recipient.slice(2).padStart(40, '0');
+      const fallbackSecret = secret; // already 0x-prefixed bytes32
+      createOrder({
+        address: PRIVACY_POOL_ADDRESS,
+        abi: PRIVACY_POOL_ABI,
+        functionName: "deposit",
+        args: [amountWei, commitment, fallbackDest, fallbackSecret, BigInt(deliveryDelay)],
+      });
+    }
+  };
+
   // After approve confirms -> create order
   useEffect(() => {
     if (approveConfirmed && step === "approving") {
-      createOrder({
-        address: INTENT_GATEWAY_ADDRESS,
-        abi: INTENT_GATEWAY_ABI,
-        functionName: "createOrder",
-        args: [
-          USDC_ADDRESS,
-          amountWei,
-          selectedDestChain,
-          destAddress || address,
-          feeAmount,
-          deadline,
-        ],
-      });
+      submitOrder();
       setStep("creating");
     }
   }, [approveConfirmed, step]);
 
-  // After order creation confirms — extract orderId from logs
+  // After deposit into pool confirms — start privacy delay countdown
   useEffect(() => {
     if (createConfirmed && step === "creating") {
-      // Extract orderId from OrderPlaced event log
-      if (createReceipt?.logs?.length > 0) {
-        // OrderPlaced event: first topic after event signature is indexed orderId
-        const orderLog = createReceipt.logs.find(
-          (log) => log.address?.toLowerCase() === INTENT_GATEWAY_ADDRESS.toLowerCase() && log.topics?.length >= 2
-        );
-        if (orderLog) {
-          setOrderId(orderLog.topics[1]);
-        }
+      // Start countdown for privacy delay
+      if (deliveryDelay > 0) {
+        setCountdown(deliveryDelay);
+        setCountdownActive(true);
       }
-      setStep(bridgeMode === "instant" ? "waiting_fill" : "waiting_fallback");
+      setStep("pool_waiting");
     }
   }, [createConfirmed, step]);
 
   // Poll order status on source chain (getOrder) and destination chain (getFill)
   useEffect(() => {
-    if (!orderId || (step !== "waiting_fill" && step !== "waiting_fallback" && step !== "settling")) return;
+    if (!orderId || (step !== "waiting_fill" && step !== "settling")) return;
 
     const interval = setInterval(async () => {
       try {
@@ -377,7 +466,10 @@ export default function BridgeWidget() {
         const isSettled = fill.settled;
 
         if (status === OrderStatus.Settled || isSettled) {
-          setStep("depositing_hl");
+          setIsOrderSettled(true);
+          if (!countdownActive) {
+            setStep("depositing_hl"); // countdown done + settled → deposit
+          }
         } else if (status === OrderStatus.Filled || isFilled) {
           setStep("settling");
         }
@@ -388,6 +480,80 @@ export default function BridgeWidget() {
 
     return () => clearInterval(interval);
   }, [orderId, step]);
+
+  // Countdown timer for privacy delay (starts after pool deposit)
+  useEffect(() => {
+    if (!countdownActive || countdown <= 0) return;
+    const timer = setInterval(() => {
+      setCountdown((prev) => {
+        if (prev <= 1) {
+          setCountdownActive(false);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [countdownActive, countdown]);
+
+  // Poll for PrivateOrderPlaced event (created by filler via PrivacyPool withdraw)
+  const [poolDepositBlock, setPoolDepositBlock] = useState(null);
+
+  // Record block number when pool deposit confirms
+  useEffect(() => {
+    if (createConfirmed && !poolDepositBlock) {
+      (async () => {
+        try {
+          const { createPublicClient, http } = await import("viem");
+          const client = createPublicClient({ chain: polkadotHubTestnet, transport: http("https://eth-rpc-testnet.polkadot.io/") });
+          const block = await client.getBlockNumber();
+          setPoolDepositBlock(block);
+        } catch {}
+      })();
+    }
+  }, [createConfirmed]);
+
+  useEffect(() => {
+    if (step !== "pool_waiting" || countdownActive) return;
+    // Countdown done — poll for the order created by filler's withdraw
+    const PRIVATE_ORDER_TOPIC = "0xfadfdbb2e4035392794a52d22bf4c0a8314d0003ca4b9afdcd840c2aaad13752";
+    const interval = setInterval(async () => {
+      try {
+        const { createPublicClient, http } = await import("viem");
+        const sourceClient = createPublicClient({
+          chain: polkadotHubTestnet,
+          transport: http("https://eth-rpc-testnet.polkadot.io/"),
+        });
+        const currentBlock = await sourceClient.getBlockNumber();
+        const fromBlock = poolDepositBlock ? poolDepositBlock : currentBlock - 200n;
+        const logs = await sourceClient.getLogs({
+          address: INTENT_GATEWAY_ADDRESS,
+          topics: [PRIVATE_ORDER_TOPIC],
+          fromBlock,
+          toBlock: currentBlock,
+        });
+        // Find the most recent PrivateOrderPlaced event
+        if (logs.length > 0) {
+          const latestLog = logs[logs.length - 1];
+          if (latestLog.topics && latestLog.topics.length >= 2) {
+            setOrderId(latestLog.topics[1]);
+            setFillerWithdrawTxHash(latestLog.transactionHash);
+            setStep("waiting_fill");
+          }
+        }
+      } catch (err) {
+        console.error("[Poll] Error checking for order:", err);
+      }
+    }, 4000);
+    return () => clearInterval(interval);
+  }, [step, countdownActive, poolDepositBlock]);
+
+  // When settlement completes → deposit HL
+  useEffect(() => {
+    if (isOrderSettled && step === "settling") {
+      setStep("depositing_hl");
+    }
+  }, [isOrderSettled, step]);
 
   // ──── Track Order ────
   const handleTrack = useCallback(async () => {
@@ -456,7 +622,7 @@ export default function BridgeWidget() {
     if (!isTracking || !trackInput) return;
     const id = trackInput.trim();
 
-    const TERMINAL = [OrderStatus.Settled, OrderStatus.Expired, OrderStatus.Cancelled, OrderStatus.Fallback];
+    const TERMINAL = [OrderStatus.Settled, OrderStatus.Expired, OrderStatus.Cancelled];
     if (trackedOrder && TERMINAL.includes(Number(trackedOrder.status))) return;
 
     const interval = setInterval(async () => {
@@ -531,7 +697,7 @@ export default function BridgeWidget() {
 
   useEffect(() => {
     if (createReverted && step === "creating") {
-      setError("Create order transaction reverted");
+      setError("Pool deposit transaction reverted");
       setFailedAt("create");
       setStep("failed");
     }
@@ -548,10 +714,13 @@ export default function BridgeWidget() {
     }
   }, [step, depositHLTriggered, chainId]);
 
-  // Step 2: auto-send deposit once on correct chain
+  // Step 2: auto-send deposit once on correct chain + correct wallet
   useEffect(() => {
     if (step !== "depositing_hl" || depositHLTriggered) return;
     if (chainId !== arbitrumSepolia.id) return;
+    // If user set a custom destination, wait for them to switch wallet
+    const destWallet = destAddress || address;
+    if (destWallet.toLowerCase() !== address.toLowerCase()) return;
     setDepositHLTriggered(true);
 
     (async () => {
@@ -579,7 +748,7 @@ export default function BridgeWidget() {
         });
       }
     })();
-  }, [step, depositHLTriggered, chainId]);
+  }, [step, depositHLTriggered, chainId, address]);
 
   // Deposit HL confirmed → completed
   useEffect(() => {
@@ -614,19 +783,7 @@ export default function BridgeWidget() {
 
     // Skip approve if allowance already sufficient
     if (usdcAllowance !== undefined && usdcAllowance >= amountWei) {
-      createOrder({
-        address: INTENT_GATEWAY_ADDRESS,
-        abi: INTENT_GATEWAY_ABI,
-        functionName: "createOrder",
-        args: [
-          USDC_ADDRESS,
-          amountWei,
-          selectedDestChain,
-          destAddress || address,
-          feeAmount,
-          deadline,
-        ],
-      });
+      submitOrder();
       setStep("creating");
       return;
     }
@@ -635,7 +792,7 @@ export default function BridgeWidget() {
       address: USDC_ADDRESS,
       abi: ERC20_ABI,
       functionName: "approve",
-      args: [INTENT_GATEWAY_ADDRESS, amountWei],
+      args: [PRIVACY_POOL_ADDRESS, amountWei],
     });
     setStep("approving");
   };
@@ -646,6 +803,15 @@ export default function BridgeWidget() {
     setError(null);
     setFailedAt(null);
     setDepositHLTriggered(false);
+    setDeliveryDelay(0);
+    setCustomDelay("");
+    setCountdown(0);
+    setCountdownActive(false);
+    setIsOrderSettled(false);
+    setPoolSecret(null);
+    setCommitmentHash(null);
+    setFillerWithdrawTxHash(null);
+    setPoolDepositBlock(null);
     resetApprove();
     resetCreate();
     resetDepositHL();
@@ -656,11 +822,6 @@ export default function BridgeWidget() {
     setCreateReceipt(null);
     refetchBalance();
     refetchAllowance();
-  };
-
-  const handleMinAmount = () => setAmount("5.005005");
-  const handleMaxAmount = () => {
-    if (usdcBalance) setAmount(formatUnits(usdcBalance, 6));
   };
 
   // Button state
@@ -681,15 +842,14 @@ export default function BridgeWidget() {
         onClick: () => switchChain({ chainId: polkadotHubTestnet.id }),
       };
     if (!amount || parseFloat(amount) === 0)
-      return { text: "Enter an amount", disabled: true, variant: "secondary" };
-    if (parseFloat(amount) < 5.005005)
-      return { text: "Minimum 5.005005 USDC", disabled: true, variant: "secondary" };
-    if (parseFloat(amount) > 10)
-      return { text: "Demo capped at 10 USDC", disabled: true, variant: "secondary", alert: "For the purposes of this demo, the bridge is capped at 10 USDC, but it works with more." };
+      return { text: "Select an amount", disabled: true, variant: "secondary" };
+    const validAmounts = STANDARD_AMOUNTS.map((a) => a.value);
+    if (!validAmounts.includes(amount))
+      return { text: "Select a valid amount (Min, 6-10)", disabled: true, variant: "secondary" };
     if (usdcBalance !== undefined && parseUnits(amount || "0", 6) > usdcBalance)
       return { text: "Insufficient USDC balance", disabled: true, variant: "secondary" };
     return {
-      text: bridgeMode === "instant" ? "Instant Bridge" : "Classic Bridge",
+      text: "Bridge",
       disabled: false,
       variant: "primary",
       onClick: handleBridge,
@@ -697,23 +857,20 @@ export default function BridgeWidget() {
   };
 
   const buttonConfig = getButtonConfig();
-  const steps = bridgeMode === "instant" ? STEPS_INSTANT : STEPS_CLASSIC;
+  const steps = STEPS_INSTANT;
 
   // Step progress
   const getStepStatus = (stepKey) => {
-    const order =
-      bridgeMode === "instant"
-        ? ["approve", "create", "fill", "settle", "deposit_hl"]
-        : ["approve", "create", "fallback", "settle", "deposit_hl"];
+    const order = ["approve", "create", "pool_waiting", "fill", "settle", "deposit_hl"];
     const stepIndex = order.indexOf(stepKey);
     const stepMap = {
       approving: 0,
       creating: 1,
-      waiting_fill: 2,
-      waiting_fallback: 2,
-      settling: 3,
-      depositing_hl: 4,
-      completed: 5,
+      pool_waiting: 2,
+      waiting_fill: 3,
+      settling: 4,
+      depositing_hl: 5,
+      completed: 6,
     };
     const currentIndex = stepMap[step];
     if (step === "failed" && failedAt) {
@@ -735,7 +892,7 @@ export default function BridgeWidget() {
         <div className="bridge-header">
           <div className="bridge-header-left">
             <span className="bridge-title">
-              {bridgeMode === "instant" ? "Instant Bridge" : "Classic Bridge"}
+              {"Anonymous Bridge"}
             </span>
           </div>
         </div>
@@ -762,12 +919,17 @@ export default function BridgeWidget() {
                       {status === "active" && (
                         <div style={{ color: "#FC007B", fontSize: 12, marginTop: 2 }}>
                           {step === "approving" && "Confirm in wallet..."}
-                          {step === "creating" && "Creating order..."}
+                          {step === "creating" && "Depositing to privacy pool..."}
+                          {step === "pool_waiting" && countdownActive && (
+                            <span>Privacy lock: {Math.floor(countdown / 60)}:{String(countdown % 60).padStart(2, '0')}</span>
+                          )}
+                          {step === "pool_waiting" && !countdownActive && "Waiting for TEE to trigger bridge..."}
                           {step === "waiting_fill" && "Waiting for filler (~2s)..."}
-                          {step === "waiting_fallback" &&
-                            `Classic pipeline (~${Math.ceil(FILLER_WINDOW / 60 + 6)} min)...`}
-                          {step === "settling" && (destChainConfig.settlementMode === "tee" ? "TEE (Phala) settlement..." : "ZK BEEFY settlement...")}
-                          {step === "depositing_hl" && !depositHLTriggered && "Switching chain..."}
+                          {step === "settling" && "TEE anonymous settlement..."}
+                          {step === "depositing_hl" && !depositHLTriggered && destAddress && destAddress.toLowerCase() !== address?.toLowerCase() && (
+                            <span>Switch to your destination wallet ({destAddress.slice(0, 6)}...{destAddress.slice(-4)}) to deposit on Hyperliquid</span>
+                          )}
+                          {step === "depositing_hl" && !depositHLTriggered && (!destAddress || destAddress.toLowerCase() === address?.toLowerCase()) && "Switching chain..."}
                           {step === "depositing_hl" && depositHLTriggered && "Depositing to Hyperliquid..."}
                         </div>
                       )}
@@ -776,6 +938,31 @@ export default function BridgeWidget() {
                 );
               })}
             </div>
+
+            {/* Privacy countdown */}
+            {step === "pool_waiting" && (
+              <div className="privacy-countdown">
+                {countdownActive ? (
+                  <>
+                    <div className="privacy-countdown-timer">
+                      {Math.floor(countdown / 60)}:{String(countdown % 60).padStart(2, '0')}
+                    </div>
+                    <div className="privacy-countdown-label">Privacy lock in progress</div>
+                    <div className="privacy-countdown-sub">Funds are mixing in the pool</div>
+                  </>
+                ) : (
+                  <>
+                    <div className="privacy-countdown-timer" style={{ color: "#FC007B" }}>
+                      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                        <circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" />
+                      </svg>
+                    </div>
+                    <div className="privacy-countdown-label">Waiting for TEE filler</div>
+                    <div className="privacy-countdown-sub">The filler will trigger the bridge automatically</div>
+                  </>
+                )}
+              </div>
+            )}
 
             {/* Amount summary */}
             <div className="bridge-route-card" style={{ marginTop: 20 }}>
@@ -792,9 +979,6 @@ export default function BridgeWidget() {
                     <span className="bridge-route-receive-chain">on {destChainConfig.shortName}</span>
                   </div>
                 </div>
-                <span className="bridge-route-receive-tag">
-                  {bridgeMode === "instant" ? destChainConfig.estimatedTime : destChainConfig.classicTime}
-                </span>
               </div>
             </div>
 
@@ -833,9 +1017,7 @@ export default function BridgeWidget() {
             <div className="bridge-result-icon success">{"\u2713"}</div>
             <div className="bridge-result-title">Bridge Complete</div>
             <div className="bridge-result-subtitle">
-              {bridgeMode === "instant"
-                ? "Your USDC has been deposited to Hyperliquid Testnet via the official bridge."
-                : "Your USDC has been deposited to Hyperliquid Testnet via the classic trustless pipeline."}
+              {"Your USDC has been anonymously deposited to Hyperliquid Testnet via TEE (dstack)."}
             </div>
             <div className="bridge-result-details">
               <div className="bridge-result-row">
@@ -848,7 +1030,7 @@ export default function BridgeWidget() {
               </div>
               <div className="bridge-result-row">
                 <span className="label">Mode</span>
-                <span className="value">{bridgeMode === "instant" ? "Instant" : "Classic"}</span>
+                <span className="value">{"TEE Anonymous"}</span>
               </div>
               {orderId && (
                 <div className="bridge-result-row">
@@ -861,9 +1043,23 @@ export default function BridgeWidget() {
                   </span>
                 </div>
               )}
+              {fillerWithdrawTxHash && (
+                <div className="bridge-result-row">
+                  <span className="label">Withdraw TX</span>
+                  <a
+                    href={`https://blockscout-testnet.polkadot.io/tx/${fillerWithdrawTxHash}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="value"
+                    style={{ color: "#FC007B", textDecoration: "underline", fontSize: 12 }}
+                  >
+                    {fillerWithdrawTxHash.slice(0, 10)}...{fillerWithdrawTxHash.slice(-8)}
+                  </a>
+                </div>
+              )}
               {createTxHash && (
                 <div className="bridge-result-row">
-                  <span className="label">Order TX</span>
+                  <span className="label">Deposit TX</span>
                   <a
                     href={`https://blockscout-testnet.polkadot.io/tx/${createTxHash}`}
                     target="_blank"
@@ -931,44 +1127,61 @@ export default function BridgeWidget() {
         </button>
       </div>
 
-      {/* Settings panel */}
+      {/* Settings overlay (outside widget) */}
       {showSettings && (
-        <div className="bridge-settings-panel">
-          <div className="bridge-settings-row">
-            <span className="bridge-settings-label">Bridge Mode</span>
-            <div className="bridge-mode-options">
-              <button
-                className={`bridge-mode-option ${bridgeMode === "instant" ? "active" : ""}`}
-                onClick={() => setBridgeMode("instant")}
-              >
-                Instant
+        <div className="settings-overlay" onClick={() => setShowSettings(false)}>
+          <div className="settings-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="settings-modal-header">
+              <h3 className="settings-modal-title">Privacy Lock Duration</h3>
+              <button className="settings-modal-close" onClick={() => setShowSettings(false)}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                  <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
               </button>
-              <button
-                className={`bridge-mode-option ${bridgeMode === "classic" ? "active" : ""}`}
-                onClick={() => setBridgeMode("classic")}
-              >
-                Classic
-              </button>
+            </div>
+            <p className="settings-modal-desc">How long should your funds stay in the privacy pool before bridging? A longer lock improves anonymity.</p>
+            <div className="settings-modal-options">
+              {DELIVERY_DELAYS.map((d) => (
+                <button
+                  key={d.seconds}
+                  className={`settings-delay-option ${deliveryDelay === d.seconds && !customDelay ? "active" : ""}`}
+                  onClick={() => { setDeliveryDelay(d.seconds); setCustomDelay(""); setShowSettings(false); }}
+                >
+                  <span className="settings-delay-label">{d.label}</span>
+                  <span className="settings-delay-desc">
+                    {d.seconds === 0 ? "No lock, bridge immediately" : `Lock for ${d.label.toLowerCase()}`}
+                  </span>
+                </button>
+              ))}
+            </div>
+            <div className="settings-custom-delay">
+              <span className="settings-custom-label">Custom duration (seconds)</span>
+              <div className="settings-custom-input-row">
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  className="settings-custom-input"
+                  placeholder="e.g. 120"
+                  value={customDelay}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    if (/^[0-9]*$/.test(v)) setCustomDelay(v);
+                  }}
+                />
+                <button
+                  className="settings-custom-btn"
+                  disabled={!customDelay || parseInt(customDelay) < 0}
+                  onClick={() => {
+                    const secs = parseInt(customDelay) || 0;
+                    setDeliveryDelay(secs);
+                    setShowSettings(false);
+                  }}
+                >
+                  Apply
+                </button>
+              </div>
             </div>
           </div>
-          {bridgeMode === "instant" && (
-            <div className="bridge-settings-row gas-row">
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <span className="bridge-settings-label">Filler Fee</span>
-                <span className="bridge-gas-value">{feeBps} bps</span>
-              </div>
-              <div className="bridge-gas-slider">
-                <ElasticSlider
-                  defaultValue={feeBps}
-                  startingValue={MIN_FEE_BPS}
-                  maxValue={MAX_FEE_BPS}
-                  stepSize={1}
-                  isStepped
-                  onChange={(v) => setFeeBps(Math.round(v))}
-                />
-              </div>
-            </div>
-          )}
         </div>
       )}
 
@@ -1016,14 +1229,14 @@ export default function BridgeWidget() {
             </div>
           </div>
 
-          {/* Send card (amount input) */}
+          {/* Send amount */}
           <div className="bridge-send-card">
             <div className="bridge-send-header">
               <span className="bridge-send-label">Send</span>
               {isConnected && (
                 <span style={{ fontSize: 12, color: "#636366" }}>
-                  5.005005
-                  <button className="bridge-send-max" onClick={handleMinAmount}>
+                  6.00
+                  <button className="bridge-send-max" onClick={() => setAmount("6")}>
                     MIN
                   </button>
                 </span>
@@ -1055,7 +1268,7 @@ export default function BridgeWidget() {
                   {isConnected && usdcBalance !== undefined && (
                     <span className="bridge-send-balance">
                       {parseFloat(formatUnits(usdcBalance, 6)).toFixed(2)}
-                      <button className="bridge-send-max" onClick={handleMaxAmount}>
+                      <button className="bridge-send-max" onClick={() => setAmount("10")}>
                         MAX
                       </button>
                     </span>
@@ -1101,9 +1314,6 @@ export default function BridgeWidget() {
                     </span>
                   </div>
                 </div>
-                <span className="bridge-route-receive-tag">
-                  {bridgeMode === "instant" ? destChainConfig.estimatedTime : destChainConfig.classicTime}
-                </span>
               </div>
               <div className="bridge-route-divider" />
               <div className="bridge-route-path">
@@ -1113,7 +1323,7 @@ export default function BridgeWidget() {
                     <span className="bridge-route-path-name">Velora</span>
                   </div>
                   <span className="bridge-route-path-tag">
-                    {bridgeMode === "instant" ? "INSTANT" : "CLASSIC"}
+                    TEE ANONYMOUS
                   </span>
                 </div>
                 <div className="bridge-route-path-meta">
@@ -1122,13 +1332,13 @@ export default function BridgeWidget() {
                       <circle cx="12" cy="12" r="10" />
                       <polyline points="12 6 12 12 16 14" />
                     </svg>
-                    {bridgeMode === "instant" ? destChainConfig.estimatedTime : destChainConfig.classicTime}
+                    {destChainConfig.estimatedTime}
                   </span>
                   <span className="bridge-route-meta-sep" />
                   <span className="bridge-route-meta-item">
-                    {destChainConfig.settlementMode === "tee" ? "TEE (Phala)" : "ZK BEEFY"}
+                    {destChainConfig.settlementMode === "tee" ? "TEE (dstack)" : "ZK BEEFY"}
                   </span>
-                  {bridgeMode === "instant" && feeAmount > 0n && (
+                  {feeAmount > 0n && (
                     <>
                       <span className="bridge-route-meta-sep" />
                       <span className="bridge-route-meta-item">
@@ -1229,7 +1439,9 @@ export default function BridgeWidget() {
                   <div className="track-row">
                     <span className="label">Recipient</span>
                     <span className="value mono">
-                      {trackedOrder.destAddress?.slice(0, 8)}...{trackedOrder.destAddress?.slice(-6)}
+                      {trackedOrder.destAddress === "0x0000000000000000000000000000000000000000"
+                        ? "Encrypted (TEE anonymous)"
+                        : `${trackedOrder.destAddress?.slice(0, 8)}...${trackedOrder.destAddress?.slice(-6)}`}
                     </span>
                   </div>
                   <div className="track-row">
@@ -1261,6 +1473,14 @@ export default function BridgeWidget() {
                       {new Date(Number(trackedFill.fillTimestamp) * 1000).toLocaleString()}
                     </span>
                   </div>
+                  {trackedOrder?.createdAt > 0n && (
+                    <div className="track-row">
+                      <span className="label">Fill latency</span>
+                      <span className="value">
+                        {Number(trackedFill.fillTimestamp) - Number(trackedOrder.createdAt)}s
+                      </span>
+                    </div>
+                  )}
                   <div className="track-row">
                     <span className="label">Settled</span>
                     <span className="value">

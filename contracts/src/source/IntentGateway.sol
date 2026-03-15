@@ -39,6 +39,10 @@ contract IntentGateway is IIntentGateway, IIsmpModule, OrderStore, ReentrancyGua
     /// @notice Authorized relayer for testnet (simulates ISMP relay)
     address public relayer;
 
+    /// @notice TEE encryption public key (compressed secp256k1, 33 bytes)
+    /// @dev Used by frontend to ECIES-encrypt destAddress for private orders
+    bytes public teeEncryptionPubKey;
+
     // ──────────────────────────── Constructor ────────────────────────────
 
     constructor(address _owner, address _ismpHandler) Ownable(_owner) {
@@ -62,6 +66,11 @@ contract IntentGateway is IIntentGateway, IIsmpModule, OrderStore, ReentrancyGua
 
     function setRelayer(address _relayer) external onlyOwner {
         relayer = _relayer;
+    }
+
+    function setTEEEncryptionPubKey(bytes calldata _pubKey) external onlyOwner {
+        require(_pubKey.length == 33 || _pubKey.length == 65, "Invalid pub key length");
+        teeEncryptionPubKey = _pubKey;
     }
 
     function pause() external onlyOwner {
@@ -116,6 +125,52 @@ contract IntentGateway is IIntentGateway, IIsmpModule, OrderStore, ReentrancyGua
         emit OrderPlaced(orderId, msg.sender, token, amount, destChain, destAddress, feeOffer, deadline);
     }
 
+    /// @notice Create a private order with encrypted destination address
+    /// @dev The destAddress is ECIES-encrypted with the TEE public key. Only the TEE filler
+    ///      can decrypt it inside the enclave. On-chain, only the encrypted blob is visible.
+    function createPrivateOrder(
+        address token,
+        uint256 amount,
+        uint32 destChain,
+        bytes calldata encryptedDest,
+        uint256 feeOffer,
+        uint256 deadline
+    ) external nonReentrant whenNotPaused returns (bytes32 orderId) {
+        require(supportedTokens[token], "Token not supported");
+        require(amount >= Constants.MIN_ORDER_AMOUNT, "Amount too low");
+        require(amount <= Constants.MAX_ORDER_AMOUNT, "Amount too high");
+        require(deadline > block.timestamp, "Deadline in the past");
+        require(encryptedDest.length > 0, "Empty encrypted dest");
+        require(feeOffer < amount, "Fee >= amount");
+
+        uint256 nonce = _nonces[msg.sender]++;
+
+        orderId = OrderLib.computePrivateOrderId(
+            msg.sender, token, amount, destChain, encryptedDest, feeOffer, deadline, nonce
+        );
+
+        _orders[orderId] = OrderLib.Order({
+            orderId: orderId,
+            user: msg.sender,
+            token: token,
+            amount: amount,
+            destChain: destChain,
+            destAddress: address(0), // hidden — only TEE knows
+            feeOffer: feeOffer,
+            deadline: deadline,
+            createdAt: block.timestamp,
+            status: OrderLib.OrderStatus.Pending
+        });
+
+        _encryptedDest[orderId] = encryptedDest;
+        _isPrivateOrder[orderId] = true;
+
+        _addActiveOrder(orderId);
+        IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
+
+        emit PrivateOrderPlaced(orderId, msg.sender, token, amount, destChain, encryptedDest, feeOffer, deadline);
+    }
+
     /// @inheritdoc IIntentGateway
     function releaseEscrow(bytes32 orderId, address fillerAddress, bytes calldata proof) external nonReentrant {
         OrderLib.Order storage order = _orders[orderId];
@@ -132,21 +187,6 @@ contract IntentGateway is IIntentGateway, IIsmpModule, OrderStore, ReentrancyGua
         IERC20(order.token).safeTransfer(fillerAddress, order.amount);
 
         emit EscrowReleased(orderId, fillerAddress, order.amount - order.feeOffer, order.feeOffer);
-    }
-
-    /// @inheritdoc IIntentGateway
-    function executeFallback(bytes32 orderId) external nonReentrant whenNotPaused {
-        OrderLib.Order storage order = _orders[orderId];
-        require(
-            OrderLib.canFallback(order, Constants.FILLER_WINDOW),
-            "Cannot fallback: not pending or filler window not expired"
-        );
-
-        order.status = OrderLib.OrderStatus.Fallback;
-        _removeActiveOrder(orderId);
-
-        // In production: dispatch ISMP post request to deliver funds on dest chain
-        emit FallbackExecuted(orderId, order.user, order.amount, order.destAddress);
     }
 
     /// @inheritdoc IIntentGateway
@@ -207,6 +247,16 @@ contract IntentGateway is IIntentGateway, IIsmpModule, OrderStore, ReentrancyGua
     /// @notice Get user nonce
     function getUserNonce(address user) external view returns (uint256) {
         return _nonces[user];
+    }
+
+    /// @notice Get encrypted destination for a private order
+    function getEncryptedDest(bytes32 orderId) external view returns (bytes memory) {
+        return _encryptedDest[orderId];
+    }
+
+    /// @notice Check if an order is private
+    function isPrivateOrder(bytes32 orderId) external view returns (bool) {
+        return _isPrivateOrder[orderId];
     }
 
     // ──────────────────────────── Internal ────────────────────────────

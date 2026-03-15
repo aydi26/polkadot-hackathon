@@ -1,6 +1,7 @@
 import { ethers } from "ethers";
 import { config, type DestChainConfig } from "./config.js";
 import type { OrderEvent } from "./watcher.js";
+import type { TEEClient } from "./tee.js";
 
 // IntentSettler ABI
 const SETTLER_ABI = [
@@ -15,23 +16,42 @@ const ERC20_ABI = [
   "function approve(address spender, uint256 amount) returns (bool)",
 ];
 
+export interface FillResult {
+  txHash: string;
+  fillId: string; // == orderId for public orders, unlinkable for private
+}
+
 export class OrderExecutor {
   private provider: ethers.JsonRpcProvider;
   private wallet: ethers.Wallet;
   private settler: ethers.Contract;
   private usdc: ethers.Contract;
   private destConfig: DestChainConfig;
+  private teeClient?: TEEClient;
 
-  constructor(destConfig: DestChainConfig) {
+  constructor(destConfig: DestChainConfig, injectedWallet?: ethers.Wallet, teeClient?: TEEClient) {
     this.destConfig = destConfig;
+    this.teeClient = teeClient;
     this.provider = new ethers.JsonRpcProvider(destConfig.rpc);
-    this.wallet = new ethers.Wallet(config.fillerPrivateKey, this.provider);
+    this.wallet = injectedWallet
+      ? injectedWallet.connect(this.provider)
+      : new ethers.Wallet(config.fillerPrivateKey, this.provider);
     this.settler = new ethers.Contract(destConfig.intentSettlerAddress, SETTLER_ABI, this.wallet);
     this.usdc = new ethers.Contract(destConfig.usdcAddress, ERC20_ABI, this.wallet);
   }
 
-  async fillOrder(order: OrderEvent): Promise<string | null> {
+  async fillOrder(order: OrderEvent): Promise<FillResult | null> {
     try {
+      let recipient = order.destAddress;
+      let fillId = order.orderId; // default: same as sourceOrderId
+
+      // Private order: decrypt destAddress + generate unlinkable fillId
+      if (order.isPrivate && this.teeClient && order.encryptedDest) {
+        recipient = await this.teeClient.decryptDestAddress(order.encryptedDest);
+        fillId = this.teeClient.computeFillId(order.orderId);
+        console.log(`[Executor:${this.destConfig.chainId}] Private order: decrypted dest inside TEE, fillId: ${fillId.slice(0, 10)}...`);
+      }
+
       // Check balance
       const balance: bigint = await this.usdc.balanceOf(this.wallet.address);
       if (balance < order.amount) {
@@ -48,18 +68,18 @@ export class OrderExecutor {
         console.log(`[Executor:${this.destConfig.chainId}] USDC approved.`);
       }
 
-      // Execute fill
-      console.log(`[Executor:${this.destConfig.chainId}] Filling order ${order.orderId}...`);
+      // Execute fill — uses fillId on destination (unlinkable for private orders)
+      console.log(`[Executor:${this.destConfig.chainId}] Filling order ${order.orderId.slice(0, 10)}... (fillId: ${fillId.slice(0, 10)}...)`);
       const tx = await this.settler.fillOrder(
-        order.orderId,
-        order.destAddress,
+        fillId,
+        recipient,
         this.destConfig.usdcAddress,
         order.amount
       );
       const receipt = await tx.wait();
 
       console.log(`[Executor:${this.destConfig.chainId}] Order filled! TX: ${receipt.hash}`);
-      return receipt.hash;
+      return { txHash: receipt.hash, fillId };
     } catch (err) {
       console.error(`[Executor:${this.destConfig.chainId}] Failed to fill order ${order.orderId}:`, err);
       return null;
@@ -67,10 +87,10 @@ export class OrderExecutor {
   }
 
   /** Fill with exponential backoff retry */
-  async fillWithRetry(order: OrderEvent): Promise<string | null> {
+  async fillWithRetry(order: OrderEvent): Promise<FillResult | null> {
     for (let attempt = 0; attempt < config.maxRetries; attempt++) {
-      const txHash = await this.fillOrder(order);
-      if (txHash) return txHash;
+      const result = await this.fillOrder(order);
+      if (result) return result;
 
       if (attempt < config.maxRetries - 1) {
         const delay = config.retryDelayMs * Math.pow(2, attempt);
