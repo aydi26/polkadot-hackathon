@@ -448,16 +448,22 @@ export default function BridgeWidget() {
 
         const status = Number(order.status);
 
-        // Check fill on destination (using dynamic settler address)
-        const fill = await destClient.readContract({
-          address: destChainConfig.settlerAddress,
-          abi: INTENT_SETTLER_ABI,
-          functionName: "getFill",
-          args: [orderId],
-        });
-
-        const isFilled = fill.fillTimestamp > 0n;
-        const isSettled = fill.settled;
+        // Check fill on destination (best-effort — executor bridges directly to HL,
+        // so fill may not exist on IntentSettler)
+        let isFilled = false;
+        let isSettled = false;
+        try {
+          const fill = await destClient.readContract({
+            address: destChainConfig.settlerAddress,
+            abi: INTENT_SETTLER_ABI,
+            functionName: "getFill",
+            args: [orderId],
+          });
+          isFilled = fill.fillTimestamp > 0n;
+          isSettled = fill.settled;
+        } catch {
+          // getFill may return zero struct or revert for unfilled orders — ignore
+        }
 
         if (status === OrderStatus.Settled || isSettled) {
           setIsOrderSettled(true);
