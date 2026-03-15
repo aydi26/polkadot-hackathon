@@ -17,6 +17,7 @@ const SETTLER_ABI = [
 // IntentGateway ABI (source chain)
 const GATEWAY_ABI = [
   "function releaseEscrow(bytes32 orderId, address fillerAddress, bytes proof) external",
+  "function markOrderFilled(bytes32 orderId) external",
   "function getOrder(bytes32 orderId) view returns (tuple(bytes32 orderId, address user, address token, uint256 amount, uint32 destChain, address destAddress, uint256 feeOffer, uint256 deadline, uint256 createdAt, uint8 status))",
 ];
 
@@ -88,7 +89,7 @@ export class SettlementMonitor {
     }
   }
 
-  /** TEE settlement: release escrow on source chain (no dest settlement needed — HL bridge is direct) */
+  /** TEE settlement: mark order filled + release escrow on source chain */
   private async autoSettleTEE(sourceOrderId: string): Promise<void> {
     const tag = `[Settler:${this.destConfig.chainId}:TEE]`;
     const fillerAddress = this.destWallet.address;
@@ -97,14 +98,40 @@ export class SettlementMonitor {
     this.state.updateStatus(sourceOrderId, FillStatus.SETTLING, { settlementMethod: "tee" });
 
     try {
-      // Step 1: Request TEE attestation for source chain
-      console.log(`${tag}   Step 1/2: Requesting TEE attestation (sourceOrderId)...`);
+      // Step 1/3: Check source chain order status and mark as filled if needed
+      console.log(`${tag}   Step 1/3: Checking source chain order status...`);
+      const order = await this.gateway.getOrder(sourceOrderId);
+      const status = Number(order.status);
+
+      if (status === 3) {
+        console.log(`${tag}   Order already settled on source chain, skipping.`);
+        this.settledOrders.add(sourceOrderId);
+        this.state.markSettled(sourceOrderId, "already-settled");
+        this.state.markReleased(sourceOrderId, "already-settled");
+        return;
+      }
+
+      if (status === 1) {
+        console.log(`${tag}   Order is Pending, calling markOrderFilled...`);
+        const markTx = await this.gateway.markOrderFilled(sourceOrderId);
+        const markReceipt = await markTx.wait();
+        console.log(`${tag}   markOrderFilled TX: ${markReceipt.hash}`);
+      } else if (status === 2) {
+        console.log(`${tag}   Order already marked as Filled.`);
+      } else {
+        console.error(`${tag}   Unexpected order status: ${status}, cannot settle.`);
+        this.state.markFailed(sourceOrderId, `Unexpected order status: ${status}`);
+        return;
+      }
+
+      // Step 2/3: Request TEE attestation for source chain
+      console.log(`${tag}   Step 2/3: Requesting TEE attestation (sourceOrderId)...`);
       const sourceAtt = await this.teeClient!.requestAttestation(
         sourceOrderId, fillerAddress, 0n, config.intentGatewayAddress, 420420417
       );
 
-      // Step 2: Release escrow on source chain
-      console.log(`${tag}   Step 2/2: releaseEscrow on source...`);
+      // Step 3/3: Release escrow on source chain
+      console.log(`${tag}   Step 3/3: releaseEscrow on source...`);
       const releaseTx = await this.gateway.releaseEscrow(sourceOrderId, fillerAddress, sourceAtt.encodedAttestation);
       const releaseReceipt = await releaseTx.wait();
       console.log(`${tag}   Escrow released! TX: ${releaseReceipt.hash}`);
