@@ -360,19 +360,28 @@ export default function BridgeWidget() {
     // Store secret in localStorage for recovery
     localStorage.setItem(`velora_secret_${commitment}`, secret);
 
+    // Hex helpers (browser-compatible, no Buffer needed)
+    const hexToBytes = (hex) => {
+      const h = hex.startsWith("0x") ? hex.slice(2) : hex;
+      const bytes = new Uint8Array(h.length / 2);
+      for (let i = 0; i < bytes.length; i++) bytes[i] = parseInt(h.substr(i * 2, 2), 16);
+      return bytes;
+    };
+    const bytesToHex = (bytes) => Array.from(new Uint8Array(bytes)).map(b => b.toString(16).padStart(2, '0')).join('');
+
     // Encrypt destAddress and secret with TEE pubkey
     if (teePubKey && teePubKey !== "0x") {
       try {
         const { encrypt } = await import("eciesjs");
-        const addrBytes = Buffer.from(recipient.slice(2), "hex"); // 20 bytes
+        const addrBytes = hexToBytes(recipient.slice(2)); // 20 bytes
         const pubKeyHex = teePubKey.startsWith("0x") ? teePubKey.slice(2) : teePubKey;
         const encryptedDest = encrypt(pubKeyHex, addrBytes);
-        const encryptedDestHex = "0x" + Buffer.from(encryptedDest).toString("hex");
+        const encryptedDestHex = "0x" + bytesToHex(encryptedDest);
 
         // Encrypt the secret too (TEE will decrypt it to trigger withdraw)
-        const secretBytes = Buffer.from(secret.slice(2), "hex"); // 32 bytes
-        const encryptedSecretBytes = encrypt(pubKeyHex, secretBytes);
-        const encryptedSecretHex = "0x" + Buffer.from(encryptedSecretBytes).toString("hex");
+        const secBytes = hexToBytes(secret.slice(2)); // 32 bytes
+        const encryptedSecretBytes = encrypt(pubKeyHex, secBytes);
+        const encryptedSecretHex = "0x" + bytesToHex(encryptedSecretBytes);
 
         createOrder({
           address: PRIVACY_POOL_ADDRESS,
@@ -382,9 +391,8 @@ export default function BridgeWidget() {
         });
       } catch (err) {
         console.warn("ECIES encryption failed:", err);
-        // Fallback: use unencrypted address and secret as bytes
         const fallbackDest = "0x" + recipient.slice(2).padStart(40, '0');
-        const fallbackSecret = secret; // already 0x-prefixed bytes32
+        const fallbackSecret = secret;
         createOrder({
           address: PRIVACY_POOL_ADDRESS,
           abi: PRIVACY_POOL_ABI,
@@ -395,7 +403,7 @@ export default function BridgeWidget() {
     } else {
       // TEE pubkey not yet set — use unencrypted address and secret as bytes
       const fallbackDest = "0x" + recipient.slice(2).padStart(40, '0');
-      const fallbackSecret = secret; // already 0x-prefixed bytes32
+      const fallbackSecret = secret;
       createOrder({
         address: PRIVACY_POOL_ADDRESS,
         abi: PRIVACY_POOL_ABI,
