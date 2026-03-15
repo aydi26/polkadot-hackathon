@@ -299,7 +299,7 @@ export default function BridgeWidget() {
             return;
           }
         } catch {}
-        await new Promise((r) => setTimeout(r, 1500));
+        await new Promise((r) => setTimeout(r, 500));
       }
     };
     poll();
@@ -321,7 +321,7 @@ export default function BridgeWidget() {
             return;
           }
         } catch {}
-        await new Promise((r) => setTimeout(r, 1500));
+        await new Promise((r) => setTimeout(r, 500));
       }
     };
     poll();
