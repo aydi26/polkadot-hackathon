@@ -18,6 +18,7 @@ export interface FillRecord {
   feeOffer: bigint;
   isPrivate: boolean;
   settlementMethod?: "beefy" | "tee";
+  freshWalletAddress?: string;
   fillTxHash?: string;
   settleTxHash?: string;
   releaseTxHash?: string;

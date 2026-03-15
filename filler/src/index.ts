@@ -111,9 +111,13 @@ async function main() {
     if (result) {
       state.markFilled(order.orderId, result.txHash);
       state.updateFillId(order.orderId, result.fillId);
+      if (result.freshWalletAddress) {
+        state.updateStatus(order.orderId, FillStatus.FILLED, { freshWalletAddress: result.freshWalletAddress });
+      }
       console.log(`[Main] Successfully filled order ${order.orderId}`);
       console.log(`  Expected profit: ${ethers.formatUnits(decision.expectedProfit, 6)} USDC`);
       if (order.isPrivate) console.log(`  Privacy: fillId ${result.fillId.slice(0, 10)}... (unlinkable)`);
+      if (result.freshWalletAddress) console.log(`  Fresh wallet: ${result.freshWalletAddress} (single-use, discarded)`);
     } else {
       state.markFailed(order.orderId, "Fill failed after retries");
     }
