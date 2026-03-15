@@ -121,22 +121,34 @@ export class TEEClient {
   /** Decrypt ECIES-encrypted destAddress inside TEE */
   async decryptDestAddress(encryptedDestHex: string): Promise<string> {
     if (!this._encryptionPrivateKey) throw new Error("Encryption key not initialized");
-    const { decrypt } = await import("eciesjs");
     const encBytes = Buffer.from(encryptedDestHex.startsWith("0x") ? encryptedDestHex.slice(2) : encryptedDestHex, "hex");
+
+    // Raw 20-byte address (fallback — frontend sent unencrypted)
+    if (encBytes.length === 20) {
+      console.log("[TEE] Dest is raw 20 bytes (not ECIES-encrypted), using directly");
+      return ethers.getAddress("0x" + encBytes.toString("hex"));
+    }
+
+    const { decrypt } = await import("eciesjs");
     const privKeyHex = Buffer.from(this._encryptionPrivateKey).toString("hex");
     const plaintext = decrypt(privKeyHex, encBytes);
-    // plaintext is 20-byte address
     return ethers.getAddress("0x" + Buffer.from(plaintext).toString("hex"));
   }
 
   /** Decrypt ECIES-encrypted secret (for triggering PrivacyPool withdraw) */
   async decryptSecret(encryptedSecretHex: string): Promise<string> {
     if (!this._encryptionPrivateKey) throw new Error("Encryption key not initialized");
-    const { decrypt } = await import("eciesjs");
     const encBytes = Buffer.from(encryptedSecretHex.startsWith("0x") ? encryptedSecretHex.slice(2) : encryptedSecretHex, "hex");
+
+    // Raw 32-byte secret (fallback — frontend sent unencrypted)
+    if (encBytes.length === 32) {
+      console.log("[TEE] Secret is raw 32 bytes (not ECIES-encrypted), using directly");
+      return "0x" + encBytes.toString("hex");
+    }
+
+    const { decrypt } = await import("eciesjs");
     const privKeyHex = Buffer.from(this._encryptionPrivateKey).toString("hex");
     const plaintext = decrypt(privKeyHex, encBytes);
-    // plaintext is 32-byte secret
     return "0x" + Buffer.from(plaintext).toString("hex");
   }
 
