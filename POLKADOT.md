@@ -2,15 +2,18 @@
 
 ## TL;DR
 
-Protocole de bridge cross-chain **intent-based** entre Polkadot Asset Hub et Hyperliquid Testnet (via Arbitrum Sepolia) qui offre **deux modes au choix de l'utilisateur** :
+Protocole de bridge cross-chain **intent-based** et **privacy-first** entre Polkadot Asset Hub et Hyperliquid Testnet (via Arbitrum Sepolia). **Tous les dépôts sont anonymes par défaut** — l'adresse de destination est chiffrée ECIES et un identifiant unlinkable est utilisé côté destination.
 
-- **Instant Bridge** (~2s) : L'utilisateur paie des fees à un filler (LP) qui front les fonds immédiatement côté Arbitrum Sepolia. Le settlement utilise le **TEE fast path** via Phala Network (~5-10s), avec ZK BEEFY en fallback (~6-8 min). Le filler récupère les fonds lockés + ses fees une fois la preuve vérifiée on-chain.
-- **Classic Bridge** (~6-8 min) : L'utilisateur ne paie aucune fee filler. Les fonds suivent le pipeline trustless complet : XCM v5 → Hyperbridge → ZK proof BEEFY → ISMP → Arbitrum Sepolia. Pas d'intermédiaire, pas de fee supplémentaire.
-- **Route A** : Polkadot Hub → Arbitrum Sepolia → Hyperliquid Testnet. Les fonds arrivent sur Arbitrum Sepolia puis sont automatiquement déposés sur Hyperliquid via le bridge officiel (ERC20 transfer vers Bridge2).
+Deux modes au choix de l'utilisateur :
 
-**L'utilisateur choisit** son mode avant de bridge. Instant Bridge pour la vitesse (avec fee), Classic Bridge pour l'économie (sans fee supplémentaire). **Si l'utilisateur choisit Instant Bridge mais qu'aucun filler n'est disponible** dans le `FILLER_WINDOW` (~30s), le système **bascule automatiquement** en mode Classic — l'utilisateur reçoit ses fonds dans tous les cas, la seule différence est le délai.
+- **Instant Bridge** (~2s) : L'utilisateur paie des fees à un filler (LP) qui tourne dans un **TEE Phala dstack** (Intel TDX). Le filler déchiffre la destination dans l'enclave, fill avec un `fillId` unlinkable, et settle via attestation TDX (~5-10s). Aucun lien on-chain entre la source et la destination.
+- **Montants standardisés** : 6, 7, 8, 9 ou 10 USDC — empêche la corrélation par montant.
+- **Délai de livraison** : L'utilisateur choisit quand recevoir ses fonds sur Hyperliquid (instantané, 15 min, 30 min, 1 heure) — casse la corrélation temporelle.
+- **Route** : Polkadot Hub → Arbitrum Sepolia → Hyperliquid Testnet. Les fonds arrivent sur Arbitrum Sepolia puis sont automatiquement déposés sur Hyperliquid via le bridge officiel après le délai choisi.
 
-Le modèle s'inspire des architectures intent-based (ERC-7683, Across Protocol) mais adapté à l'écosystème Polkadot ↔ Hyperliquid, en exploitant les primitives natives : XCM v5 pour le messaging cross-chain, Hyperbridge comme couche d'interopérabilité trustless, et les preuves ZK BEEFY pour la vérification de consensus Polkadot côté EVM.
+**Privacy by default** : Toutes les commandes utilisent `createPrivateOrder()` — la destAddress est chiffrée ECIES avec la clé publique du TEE avant d'être stockée on-chain. Seul le TEE peut déchiffrer. Le `fillId` côté destination est dérivé par `keccak256(sourceOrderId, teeSecret)` — unlinkable sans le secret TEE. Le filler TEE est requis pour toutes les opérations.
+
+Le modèle s'inspire des architectures intent-based (ERC-7683, Across Protocol) mais adapté à l'écosystème Polkadot ↔ Hyperliquid, en exploitant les primitives natives : XCM v5, Hyperbridge, ZK BEEFY, et le chiffrement ECIES dans un TEE Phala dstack pour la confidentialité.
 
 ---
 
@@ -715,24 +718,27 @@ Où :
 
 ---
 
-## TEE Settlement — Fast Path via Phala Network
+## TEE Settlement — Fast Path via Phala dstack + Dépôts Anonymes
 
-Le settlement TEE est un **fast path** (~5-10s) qui s'intercale entre le fill instantané et le settlement ZK BEEFY classique :
+Le settlement TEE est un **fast path** (~5-10s) qui s'intercale entre le fill instantané et le settlement ZK BEEFY classique. Le filler tourne dans une **Confidential VM** (dstack, Intel TDX) et dérive un wallet anonyme qui sert d'intermédiaire de confidentialité.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                    SETTLEMENT 3 COUCHES                          │
 │                                                                 │
-│  Couche 1 — TEE Fast Path (Phala Network) : ~5-10s             │
+│  Couche 1 — TEE Fast Path (Phala dstack) : ~5-10s              │
 │  ─────────────────────────────────────────────                  │
-│  Le filler demande une attestation au TEE (Phat Contract).      │
-│  L'enclave SGX/TDX vérifie l'escrow sur la source chain,       │
-│  signe une attestation, et le filler la soumet on-chain.        │
+│  Le filler tourne dans une CVM dstack (Intel TDX).              │
+│  Il dérive un wallet anonyme via dstack SDK getKey().           │
+│  Ce wallet sert d'intermédiaire : pas de lien on-chain         │
+│  entre l'adresse source (Polkadot) et le dépôt HL.            │
 │                                                                 │
 │  T+2s    Filler fill l'ordre (Alice reçoit USDC)               │
-│  T+5s    Filler demande attestation TEE au Phat Contract       │
-│  T+7s    TEE vérifie escrow + signe attestation                │
+│  T+3s    dstack getKey() → wallet dérivé (anonyme)             │
+│  T+5s    dstack tdxQuote() → attestation TDX                   │
+│  T+7s    Signe attestation avec la clé TEE-dérivée             │
 │  T+8s    verifyTEESettlement() sur IntentSettler               │
+│  T+9s    TDX quote enregistré on-chain (auditabilité)          │
 │  T+10s   releaseEscrow() sur IntentGateway                     │
 │                                                                 │
 │  Couche 2 — ZK BEEFY Fallback : ~6-8 min                      │
@@ -740,27 +746,34 @@ Le settlement TEE est un **fast path** (~5-10s) qui s'intercale entre le fill in
 │  Si le TEE échoue/timeout, le settlement BEEFY prend le relais.│
 │  Même pipeline qu'avant (GRANDPA → BEEFY → Hyperbridge → ISMP) │
 │                                                                 │
-│  Couche 3 — Classic Trustless Bridge : ~6-8 min                │
+│  Couche 3 — Montants standardisés + Délai de livraison         │
 │  ─────────────────────────────────────────────                  │
-│  Si aucun filler ne fill, fallback direct via ISMP.            │
-│  L'utilisateur reçoit ses fonds sans intermédiaire.            │
+│  Montants fixes (6-10 USDC) + délai configurable (0-1h)       │
+│  empêchent la corrélation par montant et timing.               │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-**Phala Network TEE** :
-- Les Phat Contracts tournent dans des enclaves SGX/TDX sur les Secure Workers Phala
-- Remote Attestation (RA) prouve que le code de l'enclave est intègre
-- L'enclave génère une clé de signature interne (jamais exposée)
-- Le contrat `TEEVerifier` vérifie que le signataire est une enclave trusted
+**Phala dstack TEE** :
+- Le filler tourne dans une Confidential VM (CVM) sur Intel TDX via dstack
+- Le wallet est dérivé déterministiquement via `dstack SDK deriveKey("velora/filler/wallet")` — lié à l'identité de l'app (app-id + compose-hash)
+- `tdxQuote()` génère une attestation TDX prouvant l'exécution sur hardware authentique
+- Les measurements RTMR3 contiennent : app-id, compose-hash, key-provider
+- Le contrat `TEEVerifier` vérifie la signature ECDSA + enregistre le TDX quote hash on-chain
 - Si le TEE est compromis, le ZK BEEFY fallback protège toujours le protocole
+
+**Dépôts anonymes** :
+- Le wallet TEE-dérivé agrège les fills de multiples utilisateurs
+- On-chain, les dépôts vers Hyperliquid viennent du wallet TEE — pas de lien avec les adresses source
+- L'attestation TDX prouve que le filler a exécuté correctement sans révéler le mapping user↔dépôt
+- 3 modes : `dstack` (production CVM), `simulator` (dev local), `mock` (compatibilité)
 
 **Comparaison des couches de settlement** :
 
 | Couche | Temps | Trust Model | Quand utilisé |
 |--------|-------|-------------|---------------|
-| TEE (Phala) | ~5-10s | Hardware TEE + Remote Attestation | Fast path par défaut |
+| TEE (dstack) | ~5-10s | Hardware TDX + attestation TDX + wallet dérivé | Fast path par défaut |
 | ZK BEEFY | ~6-8 min | Trustless (preuves cryptographiques) | Fallback si TEE échoue |
-| Classic | ~6-8 min | Trustless (pipeline direct) | Pas de filler disponible |
+| Delayed delivery | configurable | Délai choisi par l'utilisateur | Renforcement privacy (timing) |
 
 ---
 
@@ -904,7 +917,8 @@ velora/
 │   │   ├── settlement/
 │   │   │   ├── ProofVerifier.sol          # Vérification des preuves ZK BEEFY
 │   │   │   ├── ISMPHandler.sol            # Interface avec le module ISMP de Hyperbridge
-│   │   │   └── BEEFYVerifier.sol          # Vérification des commitment roots BEEFY
+│   │   │   ├── BEEFYVerifier.sol          # Vérification des commitment roots BEEFY
+│   │   │   └── TEEVerifier.sol            # Vérification attestations TEE (Phala Network)
 │   │   ├── libs/
 │   │   │   ├── OrderLib.sol               # Encoding/decoding ordres, hash, status transitions
 │   │   │   ├── FeeCalculator.sol          # Calcul fees dynamiques (Mode Instant)
@@ -915,6 +929,7 @@ velora/
 │   │   │   ├── IFillerRegistry.sol        # Interface registre fillers
 │   │   │   ├── IISMP.sol                  # Interface ISMP legacy
 │   │   │   ├── IISMPBridge.sol            # Types ISMP réels : IIsmpModule, IDispatcher, BridgeMessage
+│   │   │   ├── ITEEVerifier.sol           # Interface TEE attestation (Phala Network)
 │   │   │   └── IERC20.sol                 # Interface ERC-20 standard
 │   │   └── adapters/
 │   │       └── ERC7683Adapter.sol         # ERC-7683 OriginAdapter + DestinationAdapter
@@ -926,12 +941,15 @@ velora/
 │   │   ├── FeeCalculator.t.sol            # Tests fees : base, congestion, size premium, edge cases
 │   │   ├── ISMPIntegration.t.sol          # Tests ISMP : full flow, settlement, fallback, double delivery
 │   │   ├── AccessControl.t.sol            # Tests access control : Gateway, Settler, Registry, Fallback
-│   │   ├── EndToEnd.t.sol                 # Tests E2E : instant, classic, cancel, multi-filler, double fill
+│   │   ├── EndToEnd.t.sol                 # Tests E2E : instant, classic, cancel, multi-filler, TEE settlement
+│   │   ├── TEEVerifier.t.sol              # Tests TEE : enclave mgmt, attestation, replay, timeout
 │   │   └── mocks/
+│   │       ├── MockERC20.sol              # Mock ERC20 pour tests
 │   │       └── MockIsmpHost.sol           # Mock ISMP host pour tests
 │   ├── script/
 │   │   ├── DeployAssetHub.s.sol           # Déploiement IntentGateway sur source chain (Polkadot Hub Testnet)
 │   │   ├── DeployArbitrumSepolia.s.sol    # Déploiement IntentSettler + FillerRegistry + FallbackReceiver (Arb Sepolia)
+│   │   ├── DeployTEEVerifier.s.sol        # Déploiement TEEVerifier (post-deploy, configure sur IntentSettler)
 │   │   └── ConfigureCrossChain.s.sol      # Configuration cross-chain post-déploiement
 │   ├── foundry.toml
 │   └── lib/
@@ -947,7 +965,8 @@ velora/
 │   │   ├── relay.ts                       # Simulateur cross-chain relay (markOrderFilled)
 │   │   ├── state.ts                       # State tracking : cycle de vie complet des fills
 │   │   ├── pricing.ts                     # Logique de fee evaluation (fill ou skip)
-│   │   └── config.ts                      # RPC endpoints, clés, paramètres dual-chain
+│   │   ├── tee.ts                         # Client TEE Phala Network (attestation requests)
+│   │   └── config.ts                      # RPC endpoints, clés, paramètres multi-chain
 │   ├── package.json
 │   └── tsconfig.json
 │
@@ -961,7 +980,7 @@ velora/
 │   │   │   ├── FaucetButton.jsx           # Mint 1000 mock USDC sur source chain
 │   │   │   ├── StaggeredMenu.jsx          # Menu burger avec animations GSAP
 │   │   │   ├── Plasma.jsx                 # Background WebGL animé
-│   │   │   ├── EarnPage.jsx               # Page Earn (fillers)
+│   │   │   ├── ProfileCard.jsx            # Carte membre équipe
 │   │   │   ├── ResourcesPage.jsx          # Documentation intégrée
 │   │   │   ├── TeamPage.jsx               # Page équipe
 │   │   │   └── ElasticSlider.jsx          # Slider fee (composant UI)

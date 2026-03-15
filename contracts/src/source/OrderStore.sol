@@ -20,6 +20,12 @@ abstract contract OrderStore {
     /// @notice Per-user nonce for unique order IDs
     mapping(address => uint256) internal _nonces;
 
+    /// @notice Encrypted destination address for private orders (ECIES ciphertext)
+    mapping(bytes32 => bytes) internal _encryptedDest;
+
+    /// @notice Whether an order is private (destAddress hidden)
+    mapping(bytes32 => bool) internal _isPrivateOrder;
+
     /// @notice Add order to active list
     function _addActiveOrder(bytes32 orderId) internal {
         _activeOrderIndex[orderId] = _activeOrderIds.length;

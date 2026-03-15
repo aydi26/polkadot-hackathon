@@ -4,7 +4,6 @@ pragma solidity ^0.8.24;
 import {Test} from "forge-std/Test.sol";
 import {IntentGateway} from "../src/source/IntentGateway.sol";
 import {IntentSettler} from "../src/destination/IntentSettler.sol";
-import {FallbackReceiver} from "../src/destination/FallbackReceiver.sol";
 import {FillerRegistry} from "../src/destination/FillerRegistry.sol";
 import {ISMPHandler} from "../src/settlement/ISMPHandler.sol";
 import {ProofVerifier} from "../src/settlement/ProofVerifier.sol";
@@ -25,7 +24,6 @@ contract EndToEndTest is Test {
     // Destination chain contracts
     IntentSettler public settler;
     FillerRegistry public registry;
-    FallbackReceiver public fallbackReceiver;
     ISMPHandler public ismpHandler;
     ProofVerifier public proofVerifier;
     BEEFYVerifier public beefyVerifier;
@@ -59,7 +57,6 @@ contract EndToEndTest is Test {
         proofVerifier = new ProofVerifier(address(ismpHandler));
         settler = new IntentSettler(owner, address(ismpHost));
         registry = new FillerRegistry(owner, address(usdcDest));
-        fallbackReceiver = new FallbackReceiver(owner, address(ismpHost));
 
         // Configure
         vm.startPrank(owner);
@@ -68,14 +65,12 @@ contract EndToEndTest is Test {
         settler.setFillerRegistry(address(registry));
         registry.setIntentSettler(address(settler));
         ismpHandler.setAuthorizedDispatcher(address(settler), true);
-        fallbackReceiver.setDeliveryToken(address(usdcDest));
         vm.stopPrank();
 
         // Fund actors
         usdcSource.mint(alice, 10_000e6);
         usdcDest.mint(bob, 100_000e6);
         usdcDest.mint(charlie, 100_000e6);
-        usdcDest.mint(address(fallbackReceiver), 50_000e6);
 
         vm.prank(alice);
         usdcSource.approve(address(gateway), type(uint256).max);
@@ -135,33 +130,6 @@ contract EndToEndTest is Test {
         vm.prank(bob);
         settler.verifySettlement(orderId, proof);
         assertTrue(settler.getFill(orderId).settled);
-    }
-
-    /// @notice CLASSIC FLOW: No filler available, fallback bridge
-    function test_e2e_classicFallbackFlow() public {
-        uint256 amount = 200e6; // 200 USDC
-        uint256 fee = 0.5e6;
-        uint256 deadline = block.timestamp + 2 hours;
-
-        // 1. Alice creates order
-        vm.prank(alice);
-        bytes32 orderId = gateway.createOrder(address(usdcSource), amount, DEST_CHAIN, alice, fee, deadline);
-
-        // 2. No filler picks it up... wait for filler window
-        vm.warp(block.timestamp + Constants.FILLER_WINDOW + 1);
-
-        // 3. Anyone can trigger fallback
-        gateway.executeFallback(orderId);
-        assertEq(uint8(gateway.getOrder(orderId).status), uint8(OrderLib.OrderStatus.Fallback));
-
-        // 4. ISMP delivers funds via FallbackReceiver (~6-8 min in production)
-        uint256 aliceBalBefore = usdcDest.balanceOf(alice);
-        ismpHost.deliverBridgeMessage(
-            address(fallbackReceiver), orderId, alice, amount, MessageType.FALLBACK_DELIVERY
-        );
-
-        // Verify: Alice received funds via fallback
-        assertEq(usdcDest.balanceOf(alice), aliceBalBefore + amount);
     }
 
     /// @notice CANCEL FLOW: Order expires and user cancels
@@ -234,7 +202,8 @@ contract EndToEndTest is Test {
     {
         bytes32 attestationHash = keccak256(abi.encode(
             att.orderId, att.filler, att.amount,
-            att.escrowContract, att.escrowChainId, att.timestamp
+            att.escrowContract, att.escrowChainId, att.timestamp,
+            att.tdxQuoteHash
         ));
         bytes32 ethSignedHash = keccak256(abi.encodePacked(
             "\x19Ethereum Signed Message:\n32", attestationHash
@@ -274,7 +243,7 @@ contract EndToEndTest is Test {
 
         // 6. Sign TEE attestation
         (bytes memory signature, bytes memory encoded) = _signTEEAttestation(
-            ITEEVerifier.TEEAttestation(orderId, bob, 500e6, address(gateway), 420420417, block.timestamp)
+            ITEEVerifier.TEEAttestation(orderId, bob, 500e6, address(gateway), 420420417, block.timestamp, bytes32(0))
         );
 
         // 7. Verify TEE settlement on destination

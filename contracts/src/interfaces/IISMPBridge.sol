@@ -108,8 +108,7 @@ library StateMachine {
 /// @notice Message types for cross-chain communication
 enum MessageType {
     FILL_CONFIRMATION,      // Dest → Source: filler has fronted funds
-    SETTLEMENT_RELEASE,     // Source → Dest: escrow released, settlement confirmed
-    FALLBACK_DELIVERY       // Source → Dest: deliver funds via classic bridge
+    SETTLEMENT_RELEASE      // Source → Dest: escrow released, settlement confirmed
 }
 
 /// @notice Cross-chain message payload for Velora

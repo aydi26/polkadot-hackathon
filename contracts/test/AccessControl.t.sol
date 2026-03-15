@@ -4,7 +4,6 @@ pragma solidity ^0.8.24;
 import {Test} from "forge-std/Test.sol";
 import {IntentGateway} from "../src/source/IntentGateway.sol";
 import {IntentSettler} from "../src/destination/IntentSettler.sol";
-import {FallbackReceiver} from "../src/destination/FallbackReceiver.sol";
 import {FillerRegistry} from "../src/destination/FillerRegistry.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 import {Constants} from "../src/libs/Constants.sol";
@@ -20,7 +19,6 @@ import {
 contract AccessControlTest is Test {
     IntentGateway public gateway;
     IntentSettler public settler;
-    FallbackReceiver public fallbackReceiver;
     FillerRegistry public registry;
     MockERC20 public usdc;
 
@@ -32,7 +30,6 @@ contract AccessControlTest is Test {
         usdc = new MockERC20("USD Coin", "USDC", 6);
         gateway = new IntentGateway(owner, ismpHost);
         settler = new IntentSettler(owner, ismpHost);
-        fallbackReceiver = new FallbackReceiver(owner, ismpHost);
         registry = new FillerRegistry(owner, address(usdc));
     }
 
@@ -72,24 +69,6 @@ contract AccessControlTest is Test {
         vm.prank(attacker);
         vm.expectRevert("Only ISMP host");
         settler.onAccept(incoming);
-    }
-
-    // ──────────────────── FallbackReceiver.onAccept ────────────────────
-
-    function test_fallbackReceiver_onAccept_revert_notIsmpHost() public {
-        PostRequest memory req =
-            _makePostRequest(keccak256("order"), address(0), 0, MessageType.FALLBACK_DELIVERY);
-        IncomingPostRequest memory incoming = IncomingPostRequest({request: req, relayer: attacker});
-
-        vm.prank(attacker);
-        vm.expectRevert("Only ISMP host");
-        fallbackReceiver.onAccept(incoming);
-    }
-
-    function test_fallbackReceiver_receiveFallbackFunds_revert_notIsmpHandler() public {
-        vm.prank(attacker);
-        vm.expectRevert("Only ISMP handler");
-        fallbackReceiver.receiveFallbackFunds(keccak256("order"), attacker, address(usdc), 100e6);
     }
 
     // ──────────────────── FillerRegistry.recordFill ────────────────────

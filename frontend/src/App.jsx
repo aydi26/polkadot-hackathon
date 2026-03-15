@@ -83,7 +83,7 @@ function AppContent() {
             </a>
           </div>
           <span className="app-footer-text">
-            Polkadot Asset Hub → Hyperliquid Testnet | Settlement via ZK BEEFY
+            Polkadot Asset Hub → Hyperliquid Testnet | Anonymous Settlement via TEE (dstack)
           </span>
         </footer>
       </div>

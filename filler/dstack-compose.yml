@@ -1,0 +1,9 @@
+# Production dstack CVM deployment
+# Deploy via Phala Cloud or self-hosted dstack VMM
+# Secrets configured via dstack's encrypted env management
+services:
+  filler:
+    build: .
+    environment:
+      TEE_MODE: dstack
+      # RPC/contract env vars injected via dstack encrypted secrets

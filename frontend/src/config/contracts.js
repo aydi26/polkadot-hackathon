@@ -21,7 +21,6 @@ export const DEST_CHAINS = {
     settlementMode: "tee",
     finalDestination: null,
     estimatedTime: "~2s",
-    classicTime: "~7min",
     settlerAddress:
       import.meta.env.VITE_SETTLER_421614 ||
       import.meta.env.VITE_INTENT_SETTLER_ADDRESS ||
@@ -66,6 +65,72 @@ export const FILLER_WINDOW = 30; // seconds
 export const MIN_ORDER_AMOUNT = 1_000_000; // 1 USDC in 6 decimals
 export const MAX_ORDER_AMOUNT = 1_000_000_000_000; // 1M USDC
 
+// ──────────────────── PrivacyPool ────────────────────
+// PrivacyPool address (Polkadot Hub Testnet) — will be updated after deployment
+export const PRIVACY_POOL_ADDRESS =
+  import.meta.env.VITE_PRIVACY_POOL_ADDRESS ||
+  "0x0000000000000000000000000000000000000000";
+
+export const PRIVACY_POOL_ABI = [
+  {
+    inputs: [
+      { name: "amount", type: "uint256" },
+      { name: "commitmentHash", type: "bytes32" },
+      { name: "encryptedDest", type: "bytes" },
+      { name: "encryptedSecret", type: "bytes" },
+      { name: "delaySeconds", type: "uint256" },
+    ],
+    name: "deposit",
+    outputs: [],
+    stateMutability: "nonpayable",
+    type: "function",
+  },
+  {
+    inputs: [
+      { name: "secret", type: "bytes32" },
+      { name: "feeOffer", type: "uint256" },
+      { name: "deadline", type: "uint256" },
+    ],
+    name: "withdraw",
+    outputs: [],
+    stateMutability: "nonpayable",
+    type: "function",
+  },
+  {
+    inputs: [{ name: "commitmentHash", type: "bytes32" }],
+    name: "isReady",
+    outputs: [{ name: "", type: "bool" }],
+    stateMutability: "view",
+    type: "function",
+  },
+  {
+    inputs: [{ name: "commitmentHash", type: "bytes32" }],
+    name: "remainingLockTime",
+    outputs: [{ name: "", type: "uint256" }],
+    stateMutability: "view",
+    type: "function",
+  },
+  {
+    anonymous: false,
+    inputs: [
+      { indexed: true, name: "commitmentHash", type: "bytes32" },
+      { indexed: false, name: "amount", type: "uint256" },
+      { indexed: false, name: "delaySeconds", type: "uint256" },
+      { indexed: false, name: "encryptedSecret", type: "bytes" },
+    ],
+    name: "PrivacyDeposit",
+    type: "event",
+  },
+  {
+    anonymous: false,
+    inputs: [
+      { indexed: true, name: "commitmentHash", type: "bytes32" },
+    ],
+    name: "PrivacyWithdraw",
+    type: "event",
+  },
+];
+
 // ──────────────────── ABIs ────────────────────
 
 export const INTENT_GATEWAY_ABI = [
@@ -80,13 +145,6 @@ export const INTENT_GATEWAY_ABI = [
     ],
     name: "createOrder",
     outputs: [{ name: "orderId", type: "bytes32" }],
-    stateMutability: "nonpayable",
-    type: "function",
-  },
-  {
-    inputs: [{ name: "orderId", type: "bytes32" }],
-    name: "executeFallback",
-    outputs: [],
     stateMutability: "nonpayable",
     type: "function",
   },
@@ -135,6 +193,29 @@ export const INTENT_GATEWAY_ABI = [
     stateMutability: "view",
     type: "function",
   },
+  // Private order creation
+  {
+    inputs: [
+      { name: "token", type: "address" },
+      { name: "amount", type: "uint256" },
+      { name: "destChain", type: "uint32" },
+      { name: "encryptedDest", type: "bytes" },
+      { name: "feeOffer", type: "uint256" },
+      { name: "deadline", type: "uint256" },
+    ],
+    name: "createPrivateOrder",
+    outputs: [{ name: "orderId", type: "bytes32" }],
+    stateMutability: "nonpayable",
+    type: "function",
+  },
+  // TEE encryption public key
+  {
+    inputs: [],
+    name: "teeEncryptionPubKey",
+    outputs: [{ name: "", type: "bytes" }],
+    stateMutability: "view",
+    type: "function",
+  },
   // Events
   {
     anonymous: false,
@@ -155,11 +236,15 @@ export const INTENT_GATEWAY_ABI = [
     anonymous: false,
     inputs: [
       { indexed: true, name: "orderId", type: "bytes32" },
-      { indexed: false, name: "user", type: "address" },
+      { indexed: true, name: "user", type: "address" },
+      { indexed: false, name: "token", type: "address" },
       { indexed: false, name: "amount", type: "uint256" },
-      { indexed: false, name: "destAddress", type: "address" },
+      { indexed: false, name: "destChain", type: "uint32" },
+      { indexed: false, name: "encryptedDest", type: "bytes" },
+      { indexed: false, name: "feeOffer", type: "uint256" },
+      { indexed: false, name: "deadline", type: "uint256" },
     ],
-    name: "FallbackExecuted",
+    name: "PrivateOrderPlaced",
     type: "event",
   },
   {
@@ -288,7 +373,6 @@ export const OrderStatus = {
   Settled: 3,
   Expired: 4,
   Cancelled: 5,
-  Fallback: 6,
 };
 
 export const ORDER_STATUS_LABELS = {
@@ -298,5 +382,4 @@ export const ORDER_STATUS_LABELS = {
   [OrderStatus.Settled]: "Settled",
   [OrderStatus.Expired]: "Expired",
   [OrderStatus.Cancelled]: "Cancelled",
-  [OrderStatus.Fallback]: "Fallback",
 };

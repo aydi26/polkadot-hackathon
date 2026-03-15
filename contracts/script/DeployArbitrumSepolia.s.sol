@@ -5,7 +5,6 @@ import {Script, console2} from "forge-std/Script.sol";
 import {MockERC20} from "../test/mocks/MockERC20.sol";
 import {IntentSettler} from "../src/destination/IntentSettler.sol";
 import {FillerRegistry} from "../src/destination/FillerRegistry.sol";
-import {FallbackReceiver} from "../src/destination/FallbackReceiver.sol";
 import {ProofVerifier} from "../src/settlement/ProofVerifier.sol";
 import {ISMPHandler} from "../src/settlement/ISMPHandler.sol";
 import {BEEFYVerifier} from "../src/settlement/BEEFYVerifier.sol";
@@ -53,10 +52,6 @@ contract DeployArbitrumSepolia is Script {
         FillerRegistry registry = new FillerRegistry(deployer, usdcAddr);
         registry.setIntentSettler(address(settler));
 
-        // Deploy FallbackReceiver
-        FallbackReceiver fallbackReceiver = new FallbackReceiver(deployer, ismpHost);
-        fallbackReceiver.setDeliveryToken(usdcAddr);
-
         // Configure
         ismpHandler.setAuthorizedDispatcher(address(settler), true);
         settler.setFillerRegistry(address(registry));
@@ -68,7 +63,6 @@ contract DeployArbitrumSepolia is Script {
         console2.log("USDC_DEST_421614=", usdcAddr);
         console2.log("SETTLER_421614=", address(settler));
         console2.log("REGISTRY_421614=", address(registry));
-        console2.log("FALLBACK_RECEIVER_421614=", address(fallbackReceiver));
         console2.log("ISMP_HANDLER_421614=", address(ismpHandler));
         console2.log("PROOF_VERIFIER_421614=", address(proofVerifier));
         console2.log("BEEFY_VERIFIER_421614=", address(beefyVerifier));
