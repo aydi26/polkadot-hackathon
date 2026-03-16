@@ -7,6 +7,7 @@ import { FillerState, FillStatus } from "./state.js";
 import { CrossChainRelay } from "./relay.js";
 import { TEEClient } from "./tee.js";
 import { PoolWatcher } from "./pool-watcher.js";
+import { startAPI } from "./api.js";
 import { ethers } from "ethers";
 
 async function main() {
@@ -127,6 +128,10 @@ async function main() {
   await watcher.start();
   for (const settler of settlers.values()) await settler.start();
   for (const relay of relays.values()) await relay.start();
+
+  // Start filler API (exposes fill data for frontend)
+  const apiPort = Number(process.env.FILLER_API_PORT || "3001");
+  startAPI(state, apiPort);
 
   // Start PrivacyPool watcher (auto-triggers withdraw when time-lock expires)
   if (config.privacyPoolAddress && teeClient.isEnabled) {

@@ -16,12 +16,16 @@ interface PendingDeposit {
   releaseTime: number;
 }
 
+// Batching config — withdrawals are grouped to break 1:1 timing correlation
+const BATCH_WINDOW_MS = Number(process.env.POOL_BATCH_WINDOW_MS || "30000"); // 30s default
+const MIN_BATCH_DELAY_MS = Number(process.env.POOL_MIN_DELAY_MS || "5000"); // minimum 5s random delay
+
 /**
- * PoolWatcher — Watches PrivacyDeposit events and auto-triggers withdraw when time-lock expires.
+ * PoolWatcher — Watches PrivacyDeposit events and auto-triggers withdraw in batches.
  *
- * The TEE filler decrypts the secret from the encrypted blob, waits for the time-lock,
- * then calls withdraw() on the PrivacyPool. This creates the private order on IntentGateway
- * with msg.sender = PrivacyPool (not the user), breaking the on-chain identity link.
+ * Privacy improvement: instead of withdrawing each deposit immediately when the time-lock
+ * expires, ready deposits are queued and flushed together after a batch window.
+ * This breaks the 1:1 timing correlation between deposit and withdrawal.
  */
 export class PoolWatcher {
   private provider: ethers.JsonRpcProvider;
@@ -32,6 +36,10 @@ export class PoolWatcher {
   private lastBlock: number = 0;
   private pendingDeposits: Map<string, PendingDeposit> = new Map();
   private processedDeposits: Set<string> = new Set();
+
+  // Batch queue: ready deposits waiting to be withdrawn together
+  private batchQueue: PendingDeposit[] = [];
+  private batchTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(teeClient: TEEClient, privacyPoolAddress: string) {
     this.teeClient = teeClient;
@@ -44,6 +52,7 @@ export class PoolWatcher {
     this.running = true;
     this.lastBlock = await this.provider.getBlockNumber();
     console.log(`[PoolWatcher] Watching PrivacyDeposit events on ${this.pool.target}`);
+    console.log(`[PoolWatcher] Batch window: ${BATCH_WINDOW_MS}ms, min delay: ${MIN_BATCH_DELAY_MS}ms`);
     console.log(`[PoolWatcher] Starting from block ${this.lastBlock}`);
     this.pollLoop();
   }
@@ -66,7 +75,6 @@ export class PoolWatcher {
 
             console.log(`[PoolWatcher] New deposit detected: ${commitmentHash.slice(0, 10)}... (${ethers.formatUnits(amount, 6)} USDC, delay: ${delaySeconds}s)`);
 
-            // Read the release time from contract
             const deposit = await this.pool.deposits(commitmentHash);
             const releaseTime = Number(deposit.releaseTime);
 
@@ -80,12 +88,20 @@ export class PoolWatcher {
           this.lastBlock = currentBlock;
         }
 
-        // 2. Check pending deposits — trigger withdraw if ready
+        // 2. Check pending deposits — move ready ones to batch queue
         for (const [hash, dep] of this.pendingDeposits) {
-          const success = await this.triggerWithdraw(dep);
-          if (success) {
+          const ready = await this.pool.isReady(dep.commitmentHash);
+          if (ready) {
+            console.log(`[PoolWatcher] Deposit ${hash.slice(0, 10)}... is ready, adding to batch queue`);
+            this.batchQueue.push(dep);
             this.pendingDeposits.delete(hash);
-            this.processedDeposits.add(hash);
+
+            // Start batch timer on first ready deposit
+            if (!this.batchTimer) {
+              const delay = BATCH_WINDOW_MS + Math.floor(Math.random() * MIN_BATCH_DELAY_MS);
+              console.log(`[PoolWatcher] Batch timer started (${delay}ms)`);
+              this.batchTimer = setTimeout(() => this.flushBatch(), delay);
+            }
           }
         }
       } catch (err) {
@@ -96,15 +112,32 @@ export class PoolWatcher {
     }
   }
 
+  /** Flush all queued deposits — withdraw them in rapid succession (same block window) */
+  private async flushBatch(): Promise<void> {
+    this.batchTimer = null;
+    const batch = [...this.batchQueue];
+    this.batchQueue = [];
+
+    if (batch.length === 0) return;
+
+    console.log(`[PoolWatcher] Flushing batch of ${batch.length} withdrawal(s)...`);
+
+    for (const dep of batch) {
+      const success = await this.triggerWithdraw(dep);
+      if (success) {
+        this.processedDeposits.add(dep.commitmentHash);
+      } else {
+        // Re-queue failed withdrawals
+        this.pendingDeposits.set(dep.commitmentHash, dep);
+      }
+    }
+
+    console.log(`[PoolWatcher] Batch flush complete.`);
+  }
+
   private async triggerWithdraw(dep: PendingDeposit): Promise<boolean> {
     const tag = `[PoolWatcher]`;
     try {
-      // Check on-chain readiness
-      const ready = await this.pool.isReady(dep.commitmentHash);
-      if (!ready) {
-        return false; // not ready yet, will retry next poll
-      }
-
       // Decrypt the secret inside TEE
       console.log(`${tag} Decrypting secret for ${dep.commitmentHash.slice(0, 10)}...`);
       const secret = await this.teeClient.decryptSecret(dep.encryptedSecret);
@@ -128,6 +161,11 @@ export class PoolWatcher {
 
   async stop(): Promise<void> {
     this.running = false;
+    if (this.batchTimer) {
+      clearTimeout(this.batchTimer);
+      // Flush remaining batch on shutdown
+      await this.flushBatch();
+    }
     console.log("[PoolWatcher] Stopped.");
   }
 }

@@ -19,6 +19,8 @@ import {
   ERC20_ABI,
   PRIVACY_POOL_ADDRESS,
   PRIVACY_POOL_ABI,
+  DEPOSIT_ROUTER_ADDRESS,
+  DEPOSIT_ROUTER_ABI,
   CHAINS,
   DEST_CHAINS,
   MIN_FEE_BPS,
@@ -28,6 +30,7 @@ import {
   DEST_CHAIN_ID,
   OrderStatus,
   ORDER_STATUS_LABELS,
+  FILLER_API_URL,
 } from "../config/contracts";
 import polkadotDotLogo from "../assets svg/polkadot-new-dot-logo.svg";
 import "./BridgeWidget.css";
@@ -238,12 +241,15 @@ export default function BridgeWidget() {
     query: { enabled: !!address },
   });
 
-  // Read USDC allowance for PrivacyPool
+  // Read USDC allowance for DepositRouter (privacy proxy)
+  const depositTarget = DEPOSIT_ROUTER_ADDRESS !== "0x0000000000000000000000000000000000000000"
+    ? DEPOSIT_ROUTER_ADDRESS
+    : PRIVACY_POOL_ADDRESS; // fallback if router not deployed
   const { data: usdcAllowance, refetch: refetchAllowance } = useReadContract({
     address: USDC_ADDRESS,
     abi: ERC20_ABI,
     functionName: "allowance",
-    args: address ? [address, PRIVACY_POOL_ADDRESS] : undefined,
+    args: address ? [address, depositTarget] : undefined,
     query: { enabled: !!address },
   });
 
@@ -318,6 +324,50 @@ export default function BridgeWidget() {
   const [orderId, setOrderId] = useState(null);
   const [fillerWithdrawTxHash, setFillerWithdrawTxHash] = useState(null);
 
+  // Fill data from filler API (bridge TX to Hyperliquid)
+  const [fillData, setFillData] = useState(null);
+  const [trackFillData, setTrackFillData] = useState(null);
+
+  // Fetch fill data from filler API when order reaches settling/completed
+  useEffect(() => {
+    if (!orderId || (step !== "settling" && step !== "completed")) return;
+    if (fillData?.orderId === orderId) return; // already fetched
+    let cancelled = false;
+    const fetchFill = async () => {
+      try {
+        const res = await fetch(`${FILLER_API_URL}/api/fill/${orderId}`);
+        if (res.ok && !cancelled) {
+          const data = await res.json();
+          setFillData(data);
+        }
+      } catch {}
+    };
+    fetchFill();
+    // Retry every 5s until we get it (filler may not have processed yet)
+    const interval = setInterval(fetchFill, 5000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, [orderId, step]);
+
+  // Fetch fill data for tracked orders
+  useEffect(() => {
+    if (!isTracking || !trackInput) return;
+    const id = trackInput.trim();
+    if (!/^0x[0-9a-fA-F]{64}$/.test(id)) return;
+    let cancelled = false;
+    const fetchFill = async () => {
+      try {
+        const res = await fetch(`${FILLER_API_URL}/api/fill/${id}`);
+        if (res.ok && !cancelled) {
+          const data = await res.json();
+          setTrackFillData(data);
+        }
+      } catch {}
+    };
+    fetchFill();
+    const interval = setInterval(fetchFill, 5000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, [isTracking, trackInput]);
+
   // Computed values
   const amountWei = amount ? parseUnits(amount, 6) : 0n;
   const feeAmount =
@@ -369,9 +419,11 @@ export default function BridgeWidget() {
         const encryptedSecretBytes = encrypt(pubKeyHex, secBytes);
         const encryptedSecretHex = "0x" + bytesToHex(encryptedSecretBytes);
 
+        // Use DepositRouter if deployed, otherwise fallback to direct PrivacyPool
+        const useRouter = DEPOSIT_ROUTER_ADDRESS !== "0x0000000000000000000000000000000000000000";
         createOrder({
-          address: PRIVACY_POOL_ADDRESS,
-          abi: PRIVACY_POOL_ABI,
+          address: useRouter ? DEPOSIT_ROUTER_ADDRESS : PRIVACY_POOL_ADDRESS,
+          abi: useRouter ? DEPOSIT_ROUTER_ABI : PRIVACY_POOL_ABI,
           functionName: "deposit",
           args: [amountWei, commitment, encryptedDestHex, encryptedSecretHex, BigInt(deliveryDelay)],
         });
@@ -379,9 +431,10 @@ export default function BridgeWidget() {
         console.warn("ECIES encryption failed:", err);
         const fallbackDest = "0x" + recipient.slice(2).padStart(40, '0');
         const fallbackSecret = secret;
+        const useRouter = DEPOSIT_ROUTER_ADDRESS !== "0x0000000000000000000000000000000000000000";
         createOrder({
-          address: PRIVACY_POOL_ADDRESS,
-          abi: PRIVACY_POOL_ABI,
+          address: useRouter ? DEPOSIT_ROUTER_ADDRESS : PRIVACY_POOL_ADDRESS,
+          abi: useRouter ? DEPOSIT_ROUTER_ABI : PRIVACY_POOL_ABI,
           functionName: "deposit",
           args: [amountWei, commitment, fallbackDest, fallbackSecret, BigInt(deliveryDelay)],
         });
@@ -390,9 +443,10 @@ export default function BridgeWidget() {
       // TEE pubkey not yet set — use unencrypted address and secret as bytes
       const fallbackDest = "0x" + recipient.slice(2).padStart(40, '0');
       const fallbackSecret = secret;
+      const useRouter = DEPOSIT_ROUTER_ADDRESS !== "0x0000000000000000000000000000000000000000";
       createOrder({
-        address: PRIVACY_POOL_ADDRESS,
-        abi: PRIVACY_POOL_ABI,
+        address: useRouter ? DEPOSIT_ROUTER_ADDRESS : PRIVACY_POOL_ADDRESS,
+        abi: useRouter ? DEPOSIT_ROUTER_ABI : PRIVACY_POOL_ABI,
         functionName: "deposit",
         args: [amountWei, commitment, fallbackDest, fallbackSecret, BigInt(deliveryDelay)],
       });
@@ -613,6 +667,7 @@ export default function BridgeWidget() {
     setIsTracking(false);
     setTrackedOrder(null);
     setTrackedFill(null);
+    setTrackFillData(null);
     setTrackInput("");
     setTrackError("");
   }, []);
@@ -710,6 +765,12 @@ export default function BridgeWidget() {
     setFailedAt(null);
     resetApprove();
     resetCreate();
+    setApproveConfirmed(false);
+    setApproveReverted(false);
+    setCreateConfirmed(false);
+    setCreateReverted(false);
+    setCreateReceipt(null);
+    setOrderId(null);
 
     // Skip approve if allowance already sufficient
     if (usdcAllowance !== undefined && usdcAllowance >= amountWei) {
@@ -722,7 +783,7 @@ export default function BridgeWidget() {
       address: USDC_ADDRESS,
       abi: ERC20_ABI,
       functionName: "approve",
-      args: [PRIVACY_POOL_ADDRESS, amountWei],
+      args: [depositTarget, amountWei],
     });
     setStep("approving");
   };
@@ -732,7 +793,7 @@ export default function BridgeWidget() {
     setAmount("");
     setError(null);
     setFailedAt(null);
-    setDepositHLTriggered(false);
+    setOrderId(null);
     setDeliveryDelay(0);
     setCustomDelay("");
     setCountdown(0);
@@ -742,6 +803,7 @@ export default function BridgeWidget() {
     setCommitmentHash(null);
     setFillerWithdrawTxHash(null);
     setPoolDepositBlock(null);
+    setFillData(null);
     resetApprove();
     resetCreate();
     setApproveConfirmed(false);
@@ -991,6 +1053,20 @@ export default function BridgeWidget() {
                     style={{ color: "#FC007B", textDecoration: "underline", fontSize: 12 }}
                   >
                     {createTxHash.slice(0, 10)}...{createTxHash.slice(-8)}
+                  </a>
+                </div>
+              )}
+              {fillData?.fillTxHash && (
+                <div className="bridge-result-row">
+                  <span className="label">HL Bridge TX</span>
+                  <a
+                    href={`https://sepolia.arbiscan.io/tx/${fillData.fillTxHash}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="value"
+                    style={{ color: "#FC007B", textDecoration: "underline", fontSize: 12 }}
+                  >
+                    {fillData.fillTxHash.slice(0, 10)}...{fillData.fillTxHash.slice(-8)}
                   </a>
                 </div>
               )}
@@ -1395,6 +1471,23 @@ export default function BridgeWidget() {
                     <span className="value">
                       {trackedFill.settled ? "Yes" : "Pending..."}
                     </span>
+                  </div>
+                </div>
+              )}
+
+              {trackFillData?.fillTxHash && (
+                <div className="track-details" style={{ marginTop: 10 }}>
+                  <div className="track-row">
+                    <span className="label">HL Bridge TX</span>
+                    <a
+                      href={`https://sepolia.arbiscan.io/tx/${trackFillData.fillTxHash}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="value"
+                      style={{ color: "#FC007B", textDecoration: "underline", fontSize: 12 }}
+                    >
+                      {trackFillData.fillTxHash.slice(0, 10)}...{trackFillData.fillTxHash.slice(-8)}
+                    </a>
                   </div>
                 </div>
               )}

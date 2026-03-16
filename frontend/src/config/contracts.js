@@ -33,6 +33,10 @@ export const DEST_CHAINS = {
   },
 };
 
+// ──────────────────── Filler API ────────────────────
+export const FILLER_API_URL =
+  import.meta.env.VITE_FILLER_API_URL || "http://localhost:3001";
+
 // ──────────────────── Hyperliquid Bridge ────────────────────
 export const HL_BRIDGE_ADDRESS = "0x08cfc1B6b2dCF36A1480b99353A354AA8AC56f89";
 
@@ -70,6 +74,27 @@ export const MAX_ORDER_AMOUNT = 1_000_000_000_000; // 1M USDC
 export const PRIVACY_POOL_ADDRESS =
   import.meta.env.VITE_PRIVACY_POOL_ADDRESS ||
   "0x0000000000000000000000000000000000000000";
+
+// DepositRouter — privacy proxy that hides user address from PrivacyPool Transfer events
+export const DEPOSIT_ROUTER_ADDRESS =
+  import.meta.env.VITE_DEPOSIT_ROUTER_ADDRESS ||
+  "0x0000000000000000000000000000000000000000";
+
+export const DEPOSIT_ROUTER_ABI = [
+  {
+    inputs: [
+      { name: "amount", type: "uint256" },
+      { name: "commitmentHash", type: "bytes32" },
+      { name: "encryptedDest", type: "bytes" },
+      { name: "encryptedSecret", type: "bytes" },
+      { name: "delaySeconds", type: "uint256" },
+    ],
+    name: "deposit",
+    outputs: [],
+    stateMutability: "nonpayable",
+    type: "function",
+  },
+];
 
 export const PRIVACY_POOL_ABI = [
   {
