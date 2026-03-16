@@ -90,11 +90,21 @@ export class OrderExecutor {
       // === Step 6: usdSend from fresh wallet to destination on HL ===
       console.log(`${tag} [6/6] Sending $${amountUsd} USDC to ${recipient} on Hyperliquid...`);
       const hlResult = await this.hlUsdSend(freshWallet, recipient, amountUsd);
+      console.log(`${tag}   HL API response:`, JSON.stringify(hlResult));
 
-      if (hlResult.status === "err") {
-        console.error(`${tag} usdSend failed:`, hlResult.response || JSON.stringify(hlResult));
+      if (hlResult.status === "err" || hlResult.status !== "ok") {
+        console.error(`${tag} usdSend failed or unexpected response:`, JSON.stringify(hlResult));
         return null;
       }
+
+      // === Step 7: Verify destination actually received funds on HL ===
+      console.log(`${tag} [7/7] Verifying ${recipient} received $${amountUsd} on HL...`);
+      const verified = await this.verifyHLDelivery(recipient, amountUsd);
+      if (!verified) {
+        console.error(`${tag} CRITICAL: usdSend returned ok but destination ${recipient} did NOT receive funds!`);
+        return null;
+      }
+      console.log(`${tag}   Delivery verified!`);
 
       console.log(`${tag} === Order filled! Fresh wallet: ${freshWallet.address} → HL dest: ${recipient} ===`);
       return {
@@ -184,6 +194,30 @@ export class OrderExecutor {
       await sleep(5000);
     }
     throw new Error(`HL bridge credit timeout after ${maxRetries * 5}s`);
+  }
+
+  /** Verify that the destination address actually received funds on HL after usdSend */
+  private async verifyHLDelivery(destination: string, expectedAmount: number, maxRetries = 10): Promise<boolean> {
+    for (let i = 0; i < maxRetries; i++) {
+      try {
+        const response = await fetch(`${HL_TESTNET_API}/info`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ type: "clearinghouseState", user: destination }),
+        });
+        const data = await response.json();
+        const balance = parseFloat(data?.marginSummary?.accountValue || "0");
+
+        if (balance >= expectedAmount) {
+          return true;
+        }
+        console.log(`[Executor:${this.destConfig.chainId}]   Verify attempt ${i + 1}/${maxRetries}: dest balance=$${balance}, expected>=$${expectedAmount}`);
+      } catch {
+        console.log(`[Executor:${this.destConfig.chainId}]   Verify attempt ${i + 1}/${maxRetries}: error polling HL`);
+      }
+      await sleep(3000);
+    }
+    return false;
   }
 
   /** Fill with exponential backoff retry */

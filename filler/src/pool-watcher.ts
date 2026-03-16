@@ -17,7 +17,7 @@ interface PendingDeposit {
 }
 
 // Batching config — withdrawals are grouped to break 1:1 timing correlation
-const BATCH_WINDOW_MS = Number(process.env.POOL_BATCH_WINDOW_MS || "30000"); // 30s default
+const BATCH_WINDOW_MS = Number(process.env.POOL_BATCH_WINDOW_MS || "10000"); // 10s default
 const MIN_BATCH_DELAY_MS = Number(process.env.POOL_MIN_DELAY_MS || "5000"); // minimum 5s random delay
 
 /**
