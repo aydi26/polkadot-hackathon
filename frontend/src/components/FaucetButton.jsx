@@ -1,8 +1,9 @@
-import { useState, useRef, useCallback } from "react";
-import { useAccount, useWriteContract, useWaitForTransactionReceipt } from "wagmi";
-import { parseUnits } from "viem";
+import { useState, useEffect, useRef, useCallback } from "react";
+import { useAccount, useWriteContract } from "wagmi";
+import { parseUnits, createPublicClient, http } from "viem";
 import { motion, useAnimation } from "motion/react";
 import { USDC_ADDRESS } from "../config/contracts";
+import { polkadotHubTestnet } from "../config/wagmi";
 import "./FaucetButton.css";
 
 const MINT_ABI = [
@@ -79,6 +80,8 @@ const CheckIcon = () => (
 export default function FaucetButton() {
   const { address, isConnected } = useAccount();
   const [justMinted, setJustMinted] = useState(false);
+  const [mintConfirmed, setMintConfirmed] = useState(false);
+  const [isConfirming, setIsConfirming] = useState(false);
 
   const {
     writeContract: mint,
@@ -87,22 +90,49 @@ export default function FaucetButton() {
     reset,
   } = useWriteContract();
 
-  const { isSuccess: mintConfirmed, isLoading: isConfirming } =
-    useWaitForTransactionReceipt({ hash: mintTxHash });
+  // Fast polling for mint tx receipt (500ms intervals, skips slow wagmi receipt hook)
+  useEffect(() => {
+    if (!mintTxHash) return;
+    setIsConfirming(true);
+    let cancelled = false;
+    const poll = async () => {
+      const client = createPublicClient({
+        chain: polkadotHubTestnet,
+        transport: http("https://eth-rpc-testnet.polkadot.io/"),
+      });
+      while (!cancelled) {
+        try {
+          const receipt = await client.getTransactionReceipt({ hash: mintTxHash });
+          if (receipt) {
+            setMintConfirmed(true);
+            setIsConfirming(false);
+            return;
+          }
+        } catch {}
+        await new Promise((r) => setTimeout(r, 500));
+      }
+    };
+    poll();
+    return () => { cancelled = true; };
+  }, [mintTxHash]);
 
   const handleMint = () => {
     setJustMinted(false);
+    setMintConfirmed(false);
+    setIsConfirming(false);
     mint({
       address: USDC_ADDRESS,
       abi: MINT_ABI,
       functionName: "mint",
       args: [address, MINT_AMOUNT],
+      gas: 200_000n,
     });
   };
 
   // Show success briefly
   if (mintConfirmed && !justMinted) {
     setJustMinted(true);
+    setMintConfirmed(false);
     setTimeout(() => {
       setJustMinted(false);
       reset();

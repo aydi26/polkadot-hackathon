@@ -222,6 +222,34 @@ export default function BridgeWidget() {
   const [isTracking, setIsTracking] = useState(false);
   const [trackError, setTrackError] = useState("");
 
+  // Toast notification state
+  const [toast, setToast] = useState(null);
+  const toastTimerRef = useCallback(() => {}, []);
+  const showToast = useCallback((message) => {
+    setToast(message);
+    const timer = setTimeout(() => setToast(null), 4000);
+    return () => clearTimeout(timer);
+  }, []);
+
+  // Show toast when user enters an invalid amount
+  useEffect(() => {
+    if (!amount || amount === "") return;
+    const num = parseFloat(amount);
+    if (isNaN(num)) return;
+    const validAmounts = ["6", "7", "8", "9", "10"];
+    if (validAmounts.includes(amount)) {
+      setToast(null);
+      return;
+    }
+    if (num > 0 && num < 6) {
+      showToast("Amount too low. Please enter between 6 and 10 USDC.");
+    } else if (num > 10) {
+      showToast("Amount too high. Please enter between 6 and 10 USDC.");
+    } else if (amount.includes(".") || String(Math.floor(num)) !== amount) {
+      showToast("Please enter a whole number between 6 and 10 USDC.");
+    }
+  }, [amount]);
+
   // Derived destination config
   const destChainConfig = DEST_CHAINS[selectedDestChain] || DEST_CHAINS[421614];
   const destChainObj = arbitrumSepolia; // underlying chain for RPC
@@ -1072,7 +1100,101 @@ export default function BridgeWidget() {
                   </a>
                 </div>
               )}
+              {fillData?.freshWalletAddress && (
+                <div className="bridge-result-row">
+                  <span className="label">Fresh Wallet</span>
+                  <span className="value" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <span style={{ fontSize: 12, fontFamily: "monospace" }}>
+                      {fillData.freshWalletAddress.slice(0, 10)}...{fillData.freshWalletAddress.slice(-8)}
+                    </span>
+                    <CopyButton text={fillData.freshWalletAddress} />
+                  </span>
+                </div>
+              )}
+              {fillData?.settleTxHash && (
+                <div className="bridge-result-row">
+                  <span className="label">TEE Settlement</span>
+                  <a
+                    href={`https://sepolia.arbiscan.io/tx/${fillData.settleTxHash}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="value"
+                    style={{ color: "#FC007B", textDecoration: "underline", fontSize: 12 }}
+                  >
+                    {fillData.settleTxHash.slice(0, 10)}...{fillData.settleTxHash.slice(-8)}
+                  </a>
+                </div>
+              )}
+              {fillData?.releaseTxHash && (
+                <div className="bridge-result-row">
+                  <span className="label">Escrow Release</span>
+                  <a
+                    href={`https://blockscout-testnet.polkadot.io/tx/${fillData.releaseTxHash}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="value"
+                    style={{ color: "#FC007B", textDecoration: "underline", fontSize: 12 }}
+                  >
+                    {fillData.releaseTxHash.slice(0, 10)}...{fillData.releaseTxHash.slice(-8)}
+                  </a>
+                </div>
+              )}
             </div>
+
+            {/* TEE Trace Section */}
+            {fillData && (
+              <div style={{
+                background: "rgba(76, 175, 80, 0.06)",
+                border: "1px solid rgba(76, 175, 80, 0.2)",
+                borderRadius: 12,
+                padding: "14px 16px",
+                marginTop: 12,
+              }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#4CAF50" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+                    <polyline points="9 12 11 14 15 10" />
+                  </svg>
+                  <span style={{ color: "#4CAF50", fontWeight: 600, fontSize: 13 }}>Verified by TEE (dstack)</span>
+                </div>
+                {fillData.fillId && (
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                    <span style={{ color: "#8a8a8e", fontSize: 12 }}>Fill ID</span>
+                    <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <span style={{ fontSize: 11, fontFamily: "monospace", color: "#ccc" }}>
+                        {fillData.fillId.slice(0, 10)}...{fillData.fillId.slice(-8)}
+                      </span>
+                      <CopyButton text={fillData.fillId} />
+                    </span>
+                  </div>
+                )}
+                {fillData.freshWalletAddress && (
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                    <span style={{ color: "#8a8a8e", fontSize: 12 }}>Single-use Wallet</span>
+                    <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <span style={{ fontSize: 11, fontFamily: "monospace", color: "#ccc" }}>
+                        {fillData.freshWalletAddress.slice(0, 10)}...{fillData.freshWalletAddress.slice(-8)}
+                      </span>
+                      <CopyButton text={fillData.freshWalletAddress} />
+                    </span>
+                  </div>
+                )}
+                {fillData.settleTxHash && (
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <span style={{ color: "#8a8a8e", fontSize: 12 }}>Attestation TX</span>
+                    <a
+                      href={`https://sepolia.arbiscan.io/tx/${fillData.settleTxHash}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      style={{ color: "#4CAF50", textDecoration: "underline", fontSize: 11, fontFamily: "monospace" }}
+                    >
+                      {fillData.settleTxHash.slice(0, 10)}...{fillData.settleTxHash.slice(-8)}
+                    </a>
+                  </div>
+                )}
+              </div>
+            )}
+
             <div className="bridge-result-actions">
               <button className="bridge-btn primary" onClick={handleReset}>
                 Bridge Again
@@ -1255,7 +1377,11 @@ export default function BridgeWidget() {
                   {isConnected && usdcBalance !== undefined && (
                     <span className="bridge-send-balance">
                       {parseFloat(formatUnits(usdcBalance, 6)).toFixed(2)}
-                      <button className="bridge-send-max" onClick={() => setAmount("10")}>
+                      <button className="bridge-send-max" onClick={() => {
+                        const bal = Math.floor(parseFloat(formatUnits(usdcBalance, 6)));
+                        const clamped = Math.min(10, Math.max(6, bal));
+                        setAmount(String(clamped));
+                      }}>
                         MAX
                       </button>
                     </span>
@@ -1499,6 +1625,32 @@ export default function BridgeWidget() {
               </button>
             </div>
           )}
+        </div>
+      )}
+
+      {/* Toast notification (fixed bottom-right) */}
+      {toast && (
+        <div style={{
+          position: "fixed",
+          bottom: 24,
+          right: 24,
+          background: "rgba(30, 30, 35, 0.95)",
+          border: "1px solid rgba(252, 0, 123, 0.3)",
+          borderRadius: 12,
+          padding: "14px 20px",
+          fontSize: 13,
+          color: "#fff",
+          maxWidth: 320,
+          zIndex: 9999,
+          backdropFilter: "blur(12px)",
+          boxShadow: "0 8px 32px rgba(0,0,0,0.4)",
+          animation: "toast-slide-in 0.25s ease-out",
+          lineHeight: 1.5,
+        }}>
+          <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+            <span style={{ color: "#FC007B", fontSize: 16, lineHeight: 1, flexShrink: 0 }}>&#9888;</span>
+            <span>{toast}</span>
+          </div>
         </div>
       )}
     </div>

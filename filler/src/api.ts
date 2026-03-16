@@ -23,9 +23,13 @@ export function startAPI(state: FillerState, port: number = 3001): http.Server {
         res.end(JSON.stringify({
           orderId: record.orderId,
           fillTxHash: record.fillTxHash || null,
-                    status: record.status,
+          status: record.status,
           filledAt: record.filledAt || null,
           settledAt: record.settledAt || null,
+          freshWalletAddress: record.freshWalletAddress || null,
+          settleTxHash: record.settleTxHash || null,
+          releaseTxHash: record.releaseTxHash || null,
+          fillId: record.fillId || null,
         }));
       } else {
         res.writeHead(404, { "Content-Type": "application/json" });
