@@ -41,10 +41,15 @@ export class PoolWatcher {
   private batchQueue: PendingDeposit[] = [];
   private batchTimer: ReturnType<typeof setTimeout> | null = null;
 
-  constructor(teeClient: TEEClient, privacyPoolAddress: string) {
+  constructor(teeClient: TEEClient, privacyPoolAddress: string, sourceWallet?: ethers.Signer) {
     this.teeClient = teeClient;
-    this.provider = new ethers.JsonRpcProvider(config.rpcSource);
-    this.wallet = new ethers.Wallet(config.fillerPrivateKey, this.provider);
+    if (sourceWallet) {
+      this.provider = sourceWallet.provider as ethers.JsonRpcProvider;
+      this.wallet = sourceWallet as ethers.Wallet;
+    } else {
+      this.provider = new ethers.JsonRpcProvider(config.rpcSource);
+      this.wallet = new ethers.Wallet(config.fillerPrivateKey, this.provider);
+    }
     this.pool = new ethers.Contract(privacyPoolAddress, PRIVACY_POOL_ABI, this.wallet);
   }
 

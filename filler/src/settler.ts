@@ -36,7 +36,7 @@ export class SettlementMonitor {
   private settledOrders: Set<string> = new Set();
   private teeClient?: TEEClient;
 
-  constructor(state: FillerState, destConfig: DestChainConfig, teeClient?: TEEClient) {
+  constructor(state: FillerState, destConfig: DestChainConfig, teeClient?: TEEClient, sourceWallet?: ethers.Signer) {
     this.state = state;
     this.destConfig = destConfig;
     this.teeClient = teeClient;
@@ -48,9 +48,14 @@ export class SettlementMonitor {
     this.destWallet = teeWallet || new ethers.Wallet(config.fillerPrivateKey, this.destProvider);
     this.settler = new ethers.Contract(destConfig.intentSettlerAddress, SETTLER_ABI, this.destWallet);
 
-    // Source chain (where escrow lives)
-    this.sourceProvider = new ethers.JsonRpcProvider(config.rpcSource);
-    this.sourceWallet = new ethers.Wallet(config.fillerPrivateKey, this.sourceProvider);
+    // Source chain (where escrow lives) — use shared NonceManager if provided
+    if (sourceWallet) {
+      this.sourceWallet = sourceWallet as ethers.Wallet;
+      this.sourceProvider = sourceWallet.provider as ethers.JsonRpcProvider;
+    } else {
+      this.sourceProvider = new ethers.JsonRpcProvider(config.rpcSource);
+      this.sourceWallet = new ethers.Wallet(config.fillerPrivateKey, this.sourceProvider);
+    }
     this.gateway = new ethers.Contract(config.intentGatewayAddress, GATEWAY_ABI, this.sourceWallet);
   }
 

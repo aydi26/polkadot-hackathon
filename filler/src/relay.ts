@@ -43,7 +43,7 @@ export class CrossChainRelay {
   private running = false;
   private lastBlock: number = 0;
 
-  constructor(state: FillerState, destConfig: DestChainConfig) {
+  constructor(state: FillerState, destConfig: DestChainConfig, sourceWallet?: ethers.Signer) {
     this.state = state;
     this.destConfig = destConfig;
 
@@ -51,9 +51,14 @@ export class CrossChainRelay {
     this.destProvider = new ethers.JsonRpcProvider(destConfig.rpc);
     this.settler = new ethers.Contract(destConfig.intentSettlerAddress, SETTLER_ABI, this.destProvider);
 
-    // Source chain (relay fill confirmation)
-    this.sourceProvider = new ethers.JsonRpcProvider(config.rpcSource);
-    this.sourceWallet = new ethers.Wallet(config.fillerPrivateKey, this.sourceProvider);
+    // Source chain (relay fill confirmation) — use shared NonceManager if provided
+    if (sourceWallet) {
+      this.sourceWallet = sourceWallet as ethers.Wallet;
+      this.sourceProvider = sourceWallet.provider as ethers.JsonRpcProvider;
+    } else {
+      this.sourceProvider = new ethers.JsonRpcProvider(config.rpcSource);
+      this.sourceWallet = new ethers.Wallet(config.fillerPrivateKey, this.sourceProvider);
+    }
     this.gateway = new ethers.Contract(config.intentGatewayAddress, GATEWAY_ABI, this.sourceWallet);
   }
 

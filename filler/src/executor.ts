@@ -51,10 +51,18 @@ export class OrderExecutor {
         console.log(`[Executor:${this.destConfig.chainId}] Private order: decrypted dest inside TEE, fillId: ${fillId.slice(0, 10)}...`);
       }
 
-      // Check balance
+      // Check USDC balance
       const balance: bigint = await this.usdc.balanceOf(this.wallet.address);
       if (balance < order.amount) {
-        console.log(`[Executor:${this.destConfig.chainId}] Insufficient balance: ${ethers.formatUnits(balance, 6)} < ${ethers.formatUnits(order.amount, 6)} USDC`);
+        console.log(`[Executor:${this.destConfig.chainId}] Insufficient USDC: ${ethers.formatUnits(balance, 6)} < ${ethers.formatUnits(order.amount, 6)}`);
+        return null;
+      }
+
+      // Check ETH balance for gas funding
+      const minEth = ethers.parseEther("0.001"); // 0.0005 for fresh wallet + gas for 2 txs
+      const ethBalance = await this.provider.getBalance(this.wallet.address);
+      if (ethBalance < minEth) {
+        console.error(`[Executor:${this.destConfig.chainId}] INSUFFICIENT ETH for gas! Have ${ethers.formatEther(ethBalance)} ETH, need at least ${ethers.formatEther(minEth)} ETH. Fund wallet ${this.wallet.address} on Arbitrum Sepolia.`);
         return null;
       }
 

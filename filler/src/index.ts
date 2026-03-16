@@ -40,6 +40,13 @@ async function main() {
   // Initialize state tracker
   const state = new FillerState();
 
+  // Shared NonceManager for source chain — prevents nonce conflicts between
+  // PoolWatcher, Settler, and Relay all sending txs from the same wallet
+  const sourceProvider = new ethers.JsonRpcProvider(config.rpcSource);
+  const sourceBaseWallet = new ethers.Wallet(config.fillerPrivateKey, sourceProvider);
+  const sourceNonceManager = new ethers.NonceManager(sourceBaseWallet);
+  console.log(`Source chain NonceManager initialized for ${sourceBaseWallet.address}`);
+
   // Initialize source chain components
   const watcher = new OrderWatcher();
   const pricing = new PricingEngine();
@@ -58,9 +65,9 @@ async function main() {
     const destConfig = config.destinations[chainId];
     // Inject TEE wallet + TEE client (for ECIES decryption + fillId generation)
     executors.set(chainId, new OrderExecutor(destConfig, teeWallet, teeClient.isEnabled ? teeClient : undefined));
-    relays.set(chainId, new CrossChainRelay(state, destConfig));
-    // Pass TEE client to settler for attestation generation
-    settlers.set(chainId, new SettlementMonitor(state, destConfig, teeClient.isEnabled ? teeClient : undefined));
+    relays.set(chainId, new CrossChainRelay(state, destConfig, sourceNonceManager));
+    // Pass TEE client + shared source NonceManager to settler
+    settlers.set(chainId, new SettlementMonitor(state, destConfig, teeClient.isEnabled ? teeClient : undefined, sourceNonceManager));
   }
 
   // Log filler info per chain
@@ -135,7 +142,7 @@ async function main() {
 
   // Start PrivacyPool watcher (auto-triggers withdraw when time-lock expires)
   if (config.privacyPoolAddress && teeClient.isEnabled) {
-    const poolWatcher = new PoolWatcher(teeClient, config.privacyPoolAddress);
+    const poolWatcher = new PoolWatcher(teeClient, config.privacyPoolAddress, sourceNonceManager);
     await poolWatcher.start();
   }
 
