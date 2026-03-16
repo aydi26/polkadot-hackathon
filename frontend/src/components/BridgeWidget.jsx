@@ -374,7 +374,9 @@ export default function BridgeWidget() {
     amountWei > 0n
       ? (amountWei * BigInt(feeBps)) / BigInt(BPS_DENOMINATOR)
       : 0n;
-  const receiveAmount = amountWei > 0n ? amountWei - feeAmount : 0n;
+  const rawReceive = amountWei > 0n ? amountWei - feeAmount : 0n;
+  // Truncate to 2 decimal places to match Hyperliquid usdSend precision
+  const receiveAmount = (rawReceive / 10000n) * 10000n;
   const deadline = BigInt(Math.floor(Date.now() / 1000) + 3600);
 
   // Read TEE encryption public key from contract (for private orders)

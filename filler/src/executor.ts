@@ -51,10 +51,14 @@ export class OrderExecutor {
         console.log(`[Executor:${this.destConfig.chainId}] Private order: decrypted dest inside TEE, fillId: ${fillId.slice(0, 10)}...`);
       }
 
-      // Check USDC balance
+      // Compute net amount: deduct fee, truncate to 2 decimal places for HL compatibility
+      const rawNet = order.amount - order.feeOffer;
+      const netAmount = (rawNet / 10000n) * 10000n; // truncate to 2dp in 6-decimal space
+
+      // Check USDC balance (only need netAmount, not full order.amount)
       const balance: bigint = await this.usdc.balanceOf(this.wallet.address);
-      if (balance < order.amount) {
-        console.log(`[Executor:${this.destConfig.chainId}] Insufficient USDC: ${ethers.formatUnits(balance, 6)} < ${ethers.formatUnits(order.amount, 6)}`);
+      if (balance < netAmount) {
+        console.log(`[Executor:${this.destConfig.chainId}] Insufficient USDC: ${ethers.formatUnits(balance, 6)} < ${ethers.formatUnits(netAmount, 6)} (net after fee)`);
         return null;
       }
 
@@ -72,9 +76,9 @@ export class OrderExecutor {
       const freshWallet = ethers.Wallet.createRandom().connect(this.provider);
       console.log(`${tag} [1/6] Fresh wallet generated: ${freshWallet.address} (single-use)`);
 
-      // === Step 2: Fund fresh wallet with USDC ===
-      console.log(`${tag} [2/6] Transferring ${ethers.formatUnits(order.amount, 6)} USDC to fresh wallet...`);
-      const transferTx = await this.usdc.transfer(freshWallet.address, order.amount);
+      // === Step 2: Fund fresh wallet with USDC (net amount after fee) ===
+      console.log(`${tag} [2/6] Transferring ${ethers.formatUnits(netAmount, 6)} USDC (net after fee) to fresh wallet...`);
+      const transferTx = await this.usdc.transfer(freshWallet.address, netAmount);
       await transferTx.wait();
 
       // === Step 3: Fund fresh wallet with ETH for gas ===
@@ -83,15 +87,15 @@ export class OrderExecutor {
       const gasEthTx = await this.wallet.sendTransaction({ to: freshWallet.address, value: gasEth });
       await gasEthTx.wait();
 
-      // === Step 4: Fresh wallet bridges USDC to Hyperliquid ===
+      // === Step 4: Fresh wallet bridges USDC (net) to Hyperliquid ===
       const freshUsdc = new ethers.Contract(this.destConfig.usdcAddress, ERC20_ABI, freshWallet);
-      console.log(`${tag} [4/6] Bridging ${ethers.formatUnits(order.amount, 6)} USDC to Hyperliquid...`);
-      const bridgeTx = await freshUsdc.transfer(HL_BRIDGE_ADDRESS, order.amount);
+      console.log(`${tag} [4/6] Bridging ${ethers.formatUnits(netAmount, 6)} USDC (net) to Hyperliquid...`);
+      const bridgeTx = await freshUsdc.transfer(HL_BRIDGE_ADDRESS, netAmount);
       const bridgeReceipt = await bridgeTx.wait();
       console.log(`${tag}   Bridge TX: ${bridgeReceipt.hash}`);
 
       // === Step 5: Wait for HL to credit the fresh wallet ===
-      const amountUsd = parseFloat(ethers.formatUnits(order.amount, 6));
+      const amountUsd = parseFloat(ethers.formatUnits(netAmount, 6));
       console.log(`${tag} [5/6] Waiting for HL credit ($${amountUsd})...`);
       await this.waitForHLCredit(freshWallet.address, amountUsd);
 
@@ -117,7 +121,7 @@ export class OrderExecutor {
 
       if (postBalance >= preBalance) {
         console.error(`${tag} CRITICAL: usdSend returned ok but fresh wallet balance unchanged ($${postBalance})! Funds did NOT leave.`);
-        console.error(`${tag}   → Likely HL rejected the transfer silently. Amount sent: "${Number.isInteger(amountUsd) ? amountUsd.toFixed(1) : String(amountUsd)}", dest: ${recipient}`);
+        console.error(`${tag}   → Likely HL rejected the transfer silently. Amount sent: "${amountUsd.toFixed(2)}", dest: ${recipient}`);
         return null;
       }
       console.log(`${tag}   Delivery verified! Fresh wallet: $${preBalance} → $${postBalance}, Dest: $${destBalance}`);
@@ -155,8 +159,8 @@ export class OrderExecutor {
       ],
     };
 
-    // Match Python SDK: str(float) always includes decimal point (6.0 → "6.0", 7.5 → "7.5")
-    const amountStr = Number.isInteger(amountUsd) ? amountUsd.toFixed(1) : String(amountUsd);
+    // Always format with exactly 2 decimal places for HL API compatibility
+    const amountStr = amountUsd.toFixed(2);
 
     const message = {
       hyperliquidChain: "Testnet",

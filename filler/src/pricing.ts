@@ -21,11 +21,12 @@ export class PricingEngine {
       };
     }
 
-    // Check if we have enough balance
-    if (currentBalance < order.amount) {
+    // Check if we have enough balance (only need net amount after fee)
+    const netAmount = order.amount - order.feeOffer;
+    if (currentBalance < netAmount) {
       return {
         shouldFill: false,
-        reason: `Insufficient balance: ${currentBalance} < ${order.amount}`,
+        reason: `Insufficient balance: ${currentBalance} < ${netAmount} (net after fee)`,
         expectedProfit: 0n,
       };
     }
