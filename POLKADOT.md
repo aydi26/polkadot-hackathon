@@ -1,127 +1,67 @@
-# Velora — Intent-Based Cross-Chain Bridge Polkadot → Arbitrum Sepolia → Hyperliquid avec Settlement Trustless
+# Velora — Intent-Based Cross-Chain Bridge Polkadot → Arbitrum Sepolia → Hyperliquid avec Privacy Pool + TEE Settlement
 
 ## TL;DR
 
 Protocole de bridge cross-chain **intent-based** et **privacy-first** entre Polkadot Asset Hub et Hyperliquid Testnet (via Arbitrum Sepolia). **Tous les dépôts sont anonymes par défaut** — l'adresse de destination est chiffrée ECIES et un identifiant unlinkable est utilisé côté destination.
 
-Deux modes au choix de l'utilisateur :
-
-- **Instant Bridge** (~2s) : L'utilisateur paie des fees à un filler (LP) qui tourne dans un **TEE Phala dstack** (Intel TDX). Le filler déchiffre la destination dans l'enclave, fill avec un `fillId` unlinkable, et settle via attestation TDX (~5-10s). Aucun lien on-chain entre la source et la destination.
+- **Privacy Pool** : L'utilisateur dépose dans un contrat de mixing time-locked sur Polkadot Hub. Le filler TEE trigger le withdraw automatiquement après expiration du lock.
+- **TEE-only settlement** (~5-10s) : Le filler tourne dans un **TEE Phala dstack** (Intel TDX). Il déchiffre la destination dans l'enclave, fill avec un `fillId` unlinkable via un **fresh wallet single-use**, et settle via attestation TDX. Aucun lien on-chain entre source et destination.
 - **Montants standardisés** : 6, 7, 8, 9 ou 10 USDC — empêche la corrélation par montant.
-- **Délai de livraison** : L'utilisateur choisit quand recevoir ses fonds sur Hyperliquid (instantané, 15 min, 30 min, 1 heure) — casse la corrélation temporelle.
-- **Route** : Polkadot Hub → Arbitrum Sepolia → Hyperliquid Testnet. Les fonds arrivent sur Arbitrum Sepolia puis sont automatiquement déposés sur Hyperliquid via le bridge officiel après le délai choisi.
+- **Délai de livraison** : L'utilisateur choisit un délai de privacy lock (instantané, 15s, 30s, 1 min, ou custom jusqu'à 1h) — casse la corrélation temporelle.
+- **Route** : Polkadot Hub → Arbitrum Sepolia → Hyperliquid Testnet. Le filler TEE dépose automatiquement sur Hyperliquid via le bridge officiel + `usdSend`.
 
-**Privacy by default** : Toutes les commandes utilisent `createPrivateOrder()` — la destAddress est chiffrée ECIES avec la clé publique du TEE avant d'être stockée on-chain. Seul le TEE peut déchiffrer. Le `fillId` côté destination est dérivé par `keccak256(sourceOrderId, teeSecret)` — unlinkable sans le secret TEE. Le filler TEE est requis pour toutes les opérations.
+**Privacy by default** : Toutes les commandes passent par le PrivacyPool. La destAddress est chiffrée ECIES avec la clé publique du TEE. Le secret de retrait est aussi chiffré. Seul le TEE peut déchiffrer et trigger le withdraw. Le `fillId` côté destination est dérivé par `keccak256(sourceOrderId, teeSecret)` — unlinkable sans le secret TEE. Le dépôt Hyperliquid est fait via un fresh wallet single-use — aucun lien avec le filler TEE.
 
-Le modèle s'inspire des architectures intent-based (ERC-7683, Across Protocol) mais adapté à l'écosystème Polkadot ↔ Hyperliquid, en exploitant les primitives natives : XCM v5, Hyperbridge, ZK BEEFY, et le chiffrement ECIES dans un TEE Phala dstack pour la confidentialité.
+Le modèle s'inspire des architectures intent-based (ERC-7683, Across Protocol) mais adapté à l'écosystème Polkadot ↔ Hyperliquid, en exploitant le chiffrement ECIES dans un TEE Phala dstack pour la confidentialité, et un PrivacyPool pour le mixing.
 
 ---
 
-## Le Concept (Intent-Based Bridging)
+## Le Concept (Intent-Based Bridging + Privacy Pool)
 
 ```
 Le problème :
-  Les bridges classiques imposent une attente de ~15-45 min (finalité + relay + vérification).
-  → L'utilisateur ne peut pas trader immédiatement après un bridge.
-  → UX catastrophique pour un trader qui veut entrer en position rapidement.
+  Les bridges classiques exposent les adresses source et destination on-chain.
+  → N'importe qui peut tracer les transferts cross-chain.
+  → Pas de confidentialité pour les traders.
 
 La solution Velora :
-  Offrir le CHOIX à l'utilisateur :
-  → Instant Bridge : fonds en ~2s grâce à un filler (LP), moyennant une fee (~5-100 bps).
-  → Classic Bridge : fonds en ~6-8 min via le pipeline trustless, sans fee supplémentaire.
-  → Si Instant choisi mais aucun filler disponible → fallback automatique en Classic (~6-8 min).
+  Un bridge intent-based où TOUS les dépôts sont anonymes :
+  → L'utilisateur dépose dans un PrivacyPool (mixing) avec un délai configurable.
+  → Le filler TEE déchiffre la destination à l'intérieur de l'enclave.
+  → Le fill utilise un identifiant unlinkable et un fresh wallet jetable.
+  → Aucun observateur ne peut relier source et destination.
 
 Concrètement :
-  Alice veut bridge 100 USDC de Polkadot Asset Hub vers Arbitrum Sepolia.
+  Alice veut bridge 10 USDC de Polkadot Asset Hub vers Hyperliquid Testnet.
 
-  Option A — Instant Bridge (Alice est pressée, elle veut trader maintenant) :
-  → Alice choisit "Instant Bridge" dans le frontend
-  → Alice lock 100 USDC dans l'escrow IntentGateway sur Asset Hub (fee = 0.10 USDC)
-  → Un filler détecte l'intent (event OrderPlaced)
-  → Le filler appelle fillOrder() sur Arbitrum Sepolia → Alice reçoit ~99.90 USDC instantanément
-  → Alice trade sur Hyperliquid immédiatement
-  → EN ARRIÈRE-PLAN : settlement trustless → le filler récupère 100 USDC
+  T+0s    Alice dépose 10 USDC dans le PrivacyPool (Polkadot Hub)
+          → Secret + destination chiffrés ECIES
+          → Event sans adresse utilisateur
+  T+Xs    Privacy lock expire (durée choisie par Alice)
+  T+Xs    TEE filler déchiffre le secret, trigger le withdraw automatiquement
+          → PrivacyPool crée un ordre privé sur IntentGateway (user = Pool)
+  T+2s    TEE filler déchiffre la destination, fill avec fresh wallet
+          → Bridge USDC2 vers Hyperliquid via Bridge2
+          → usdSend du fresh wallet vers l'adresse de destination
+  T+10s   TEE settlement : attestation TDX + releaseEscrow
+          → Fonds libérés sur Polkadot Hub
 
-  Option B — Classic Bridge (Alice veut économiser la fee) :
-  → Alice choisit "Classic Bridge" dans le frontend
-  → Alice lock 100 USDC dans l'escrow IntentGateway sur Asset Hub (fee = 0)
-  → Aucun filler ne prend l'ordre (fee = 0)
-  → executeFallback() est déclenché après FILLER_WINDOW
-  → XCM v5 → Hyperbridge → ZK proof BEEFY → ISMP → Arbitrum Sepolia
-  → Alice reçoit 100 USDC (~6-8 min) — aucune fee filler prélevée
-```
-
-```
-Comparaison des deux modes :
-
-| Critère               | Instant Bridge (filler)          | Classic Bridge (direct)           |
-|-----------------------|----------------------------------|-----------------------------------|
-| Temps pour l'user     | ~2 secondes                      | ~6-8 minutes                      |
-| Fee filler            | 5-100 bps (choix user)           | 0 (aucune fee filler)             |
-| Intermédiaire         | Oui (filler LP)                  | Non (pipeline trustless direct)   |
-| Trust assumption      | Trustless (ZK proof BEEFY)       | Trustless (ZK proof BEEFY)        |
-| Montant reçu (100 USDC) | ~99.90-99.95 USDC            | 100 USDC                          |
-| Idéal pour            | Traders pressés, positions urgentes | Transferts non urgents, économie |
-| Si aucun filler       | Fallback auto → Classic (~6-8 min)  | N/A (pas de filler impliqué)     |
+  Résultat : Bob (wallet de destination d'Alice) reçoit ~9.99 USDC sur Hyperliquid.
+  Personne ne peut prouver que le dépôt d'Alice = le fill de Bob.
 ```
 
 ```
 Comparaison avec les autres bridges :
 
-| Critère               | Bridge classique (lock & mint) | Bridge optimistic (relay)    | Velora (intent-based)     |
-|-----------------------|-------------------------------|-----------------------------|---------------------------------|
-| Temps pour l'user     | 15-45 min                     | 2-10 min (+ challenge)      | ~2s (Instant) ou ~7min (Classic)|
-| Trust assumption      | Comité de validators          | Watcher honnête (1-of-N)    | Trustless (ZK proof BEEFY)      |
-| Capital efficiency    | Faible (mint/burn)            | Moyenne (bonding)           | Haute (fillers compétitifs)     |
-| UX trading            | Impossible pendant le bridge  | Attente réduite             | Trade immédiat (Instant mode)   |
-| Settlement            | On-chain sync                 | Optimistic + challenge      | ZK proof async (~6-8 min)       |
-| Choix utilisateur     | Non                           | Non                         | Oui (Instant vs Classic)        |
-```
-
-**Pourquoi intent-based** : L'utilisateur exprime une *intention* ("je veux 100 USDC sur Arbitrum Sepolia") et **choisit** comment il veut que cette intention soit exécutée. En mode Instant, le marché (fillers/LPs) se charge de l'exécuter rapidement moyennant une fee. En mode Classic, le pipeline trustless gère tout directement, sans intermédiaire.
-
-**Le coût de l'instantanéité** : Les fees du filler — typiquement 5-100 bps selon la liquidité disponible et la taille de l'ordre. Plus la fee est élevée, plus le fill est rapide. L'utilisateur qui ne veut pas payer cette fee peut simplement choisir le Classic Bridge. **Si aucun filler ne répond en mode Instant**, le système bascule automatiquement en Classic — la fee n'est jamais prélevée si personne ne fill.
-
-**Deux modes, même sécurité** : Les deux modes reposent sur le même settlement trustless (ZK BEEFY). La seule différence : le mode Instant utilise un filler comme intermédiaire temporaire pour accélérer la livraison. Le mode Classic envoie les fonds directement via le pipeline. En cas d'absence de filler en mode Instant, le fallback automatique vers Classic garantit que **l'utilisateur reçoit toujours ses fonds**, sans exception.
-
-```
-Deux modes de fonctionnement — AU CHOIX DE L'UTILISATEUR :
-
-Mode A — Instant Bridge (filler, ~2s, avec fee) :
-  T+0s    Alice choisit "Instant Bridge" et lock 100 USDC (fee = 0.10 USDC)
-  T+2s    Filler détecte + fillOrder() → Alice reçoit ~99.90 USDC sur Arbitrum Sepolia
-  T+2s    Alice trade immédiatement sur Hyperliquid
-  T+7min  Settlement trustless → filler remboursé + fees
-  → Coût : fees filler (~5-100 bps)
-  → UX : instantanée
-
-Mode A bis — Instant Bridge SANS filler disponible (fallback automatique) :
-  T+0s    Alice choisit "Instant Bridge" et lock 100 USDC (fee = 0.10 USDC)
-  T+30s   FILLER_WINDOW expire — aucun filler disponible
-  T+30s   executeFallback() déclenché automatiquement → bascule en Classic
-  T+1min  XCM v5 initie le transfer direct
-  T+3min  Hyperbridge génère la preuve ZK BEEFY
-  T+5min  ISMP relaie vers Arbitrum Sepolia
-  T+7min  Alice reçoit ses 100 USDC sur Arbitrum Sepolia (fee non prélevée, aucun filler)
-  → Coût : 0 (la fee n'est prélevée que si un filler fill effectivement)
-  → UX : ~6-8 min d'attente (fallback transparent pour l'utilisateur)
-  → Le frontend affiche : "Aucun filler disponible — bridge classique en cours..."
-
-Mode B — Classic Bridge (~6-8 min, sans fee filler) :
-  T+0s    Alice choisit "Classic Bridge" et lock 100 USDC (fee = 0)
-  T+30s   FILLER_WINDOW expire — aucun filler (fee = 0 → non attractif)
-  T+30s   executeFallback() déclenché automatiquement
-  T+1min  XCM v5 initie le transfer direct
-  T+3min  Hyperbridge génère la preuve ZK BEEFY
-  T+5min  ISMP relaie vers Arbitrum Sepolia
-  T+7min  Alice reçoit ses 100 USDC sur Arbitrum Sepolia (intégralité, aucune fee)
-  → Coût : 0 fees filler (juste les frais réseau)
-  → UX : ~6-8 min d'attente (bridge classique trustless)
-
-Le frontend affiche le choix :
-  → Toggle "Instant Bridge" / "Classic Bridge"
-  → Instant : slider de fee (5-100 bps), estimation du temps de fill
-  → Classic : pas de slider, affichage "~6-8 minutes, 0 fee filler"
+| Critère               | Bridge classique        | Bridge optimistic       | Velora (privacy-first)        |
+|-----------------------|------------------------|------------------------|-------------------------------|
+| Temps pour l'user     | 15-45 min              | 2-10 min               | ~2s (après privacy lock)      |
+| Privacy               | Aucune                 | Aucune                 | 6 couches de protection       |
+| Trust assumption      | Comité de validators   | Watcher honnête        | TEE attestation (TDX)         |
+| Capital efficiency    | Faible (mint/burn)     | Moyenne (bonding)      | Haute (filler compétitif)     |
+| Mixing                | Non                    | Non                    | PrivacyPool time-locked       |
+| Destination visible   | Oui                    | Oui                    | Non (ECIES chiffré)           |
+| IDs linkables         | Oui                    | Oui                    | Non (fillId unlinkable)       |
 ```
 
 ---
@@ -129,627 +69,278 @@ Le frontend affiche le choix :
 ## Architecture Globale
 
 ```
-  ┌──────────────────────────────────────────────────────────────────────────┐
-  │                    Polkadot Asset Hub (Source Chain)                      │
-  │                                                                          │
-  │  ┌────────────────────────────────────────────────────────────────────┐  │
-  │  │                     IntentGateway (Escrow)                         │  │
-  │  │                                                                    │  │
-  │  │  ┌──────────────┐  ┌──────────────┐  ┌─────────────────────────┐  │  │
-  │  │  │ createOrder() │  │  OrderStore  │  │  releaseEscrow()        │  │  │
-  │  │  │ (lock USDC)   │  │  (intents)   │  │  (après ZK proof)      │  │  │
-  │  │  └──────────────┘  └──────────────┘  └─────────────────────────┘  │  │
-  │  │                                                                    │  │
-  │  │  ┌──────────────────────────────────────────────────────────────┐  │  │
-  │  │  │ executeFallback() — si mode Classic (fee=0, pas de filler)   │  │  │
-  │  │  └──────────────────────────────────────────────────────────────┘  │  │
-  │  └────────────────────────────────────────────────────────────────────┘  │
-  │                                                                          │
-  │  Event: OrderPlaced(orderId, user, amount, destChain, feeOffer)          │
-  └──────────────────────┬───────────────────────────────────────────────────┘
-                         │
-                         │  ① User lock USDC (fee > 0 = Instant, fee = 0 = Classic)
-                         │
-                         ▼
-  ┌──────────────────────────────────────────────────────────────────────────┐
-  │                  Filler Network (Off-Chain) — Mode Instant uniquement    │
-  │                                                                          │
-  │  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────────┐   │
-  │  │  Filler A (LP)   │  │  Filler B (LP)   │  │  Filler C (LP)      │   │
-  │  │  Watch events    │  │  Watch events    │  │  Watch events       │   │
-  │  │  Compete on fees │  │  Compete on fees │  │  Compete on fees    │   │
-  │  └──────────────────┘  └──────────────────┘  └──────────────────────┘   │
-  │                                                                          │
-  │  → Ignore les ordres avec fee = 0 (Classic Bridge)                       │
-  │  → Compétition sur les ordres avec fee > 0 (Instant Bridge)              │
-  └──────────────────────┬───────────────────────────────────────────────────┘
-                         │
-                         │  ② Filler détecte l'intent + front les fonds (Instant)
-                         │     OU pipeline direct (Classic)
-                         │
-                         ▼
-  ┌──────────────────────────────────────────────────────────────────────────┐
-  │                       Arbitrum Sepolia (Destination Chain)                       │
-  │                                                                          │
-  │  ┌────────────────────────────────────────────────────────────────────┐  │
-  │  │              IntentSettler (Mode Instant — via filler)              │  │
-  │  │                                                                    │  │
-  │  │  ┌──────────────┐  ┌──────────────┐  ┌─────────────────────────┐  │  │
-  │  │  │ fillOrder()   │  │  FillStore   │  │  verifySettlement()     │  │  │
-  │  │  │ (pay user)    │  │  (fills)     │  │  (ZK proof BEEFY)      │  │  │
-  │  │  └──────────────┘  └──────────────┘  └─────────────────────────┘  │  │
-  │  └────────────────────────────────────────────────────────────────────┘  │
-  │                                                                          │
-  │  ┌────────────────────────────────────────────────────────────────────┐  │
-  │  │          FallbackReceiver (Mode Classic — pipeline direct)         │  │
-  │  │                                                                    │  │
-  │  │  ┌───────────────────────────────────────────────────────────────┐ │  │
-  │  │  │ receiveFallbackFunds() — reçoit les USDC via ISMP (no filler)│ │  │
-  │  │  └───────────────────────────────────────────────────────────────┘ │  │
-  │  └────────────────────────────────────────────────────────────────────┘  │
-  │                                                                          │
-  │  → Mode Instant : Alice reçoit ses USDC en ~2s via le filler             │
-  │  → Mode Classic : Alice reçoit ses USDC en ~7min via FallbackReceiver    │
-  └──────────────────────────────────────────────────────────────────────────┘
-
-  ┌──────────────────────────────────────────────────────────────────────────┐
-  │              Settlement Trustless (Arrière-Plan ~6-8 min)                │
-  │              → Utilisé par les DEUX modes                                │
-  │                                                                          │
-  │  XCM v5 (Asset Hub)                                                      │
-  │      │                                                                   │
-  │      ▼                                                                   │
-  │  Hyperbridge (Interop Layer)                                             │
-  │      │                                                                   │
-  │      ▼                                                                   │
-  │  ZK Proof BEEFY (Consensus Polkadot vérifié côté EVM)                   │
-  │      │                                                                   │
-  │      ▼                                                                   │
-  │  ISMP (Interoperable State Machine Protocol)                             │
-  │      │                                                                   │
-  │      ▼                                                                   │
-  │  Mode Instant : verifySettlement() → preuve valide → signal à Asset Hub  │
-  │      │          → releaseEscrow() → filler récupère USDC + fees          │
-  │  Mode Classic : FallbackReceiver → fonds livrés directement à l'user     │
-  └──────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────┐
+│                    Polkadot Asset Hub (Source Chain)                      │
+│                                                                          │
+│  ┌────────────────────────────────────────────────────────────────────┐  │
+│  │                     DepositRouter (Privacy Proxy)                   │  │
+│  │  deposit(amount, commitmentHash, encryptedDest, encryptedSecret)   │  │
+│  │  → Forward vers PrivacyPool (masque l'adresse de l'utilisateur)    │  │
+│  └───────────────────────────┬────────────────────────────────────────┘  │
+│                              │                                           │
+│  ┌───────────────────────────▼────────────────────────────────────────┐  │
+│  │                     PrivacyPool (Mixing Contract)                   │  │
+│  │                                                                    │  │
+│  │  deposit()  → Lock USDC + enregistre commitment, délai, secrets    │  │
+│  │  withdraw() → Vérifie secret, approve → createPrivateOrder()       │  │
+│  │  Montants standards : 6, 7, 8, 9, 10 USDC                        │  │
+│  │  Time-lock : 0 à 3600 secondes                                    │  │
+│  └────────────────────────────────────────────────────────────────────┘  │
+│                                                                          │
+│  ┌────────────────────────────────────────────────────────────────────┐  │
+│  │                     IntentGateway (Escrow)                         │  │
+│  │                                                                    │  │
+│  │  createPrivateOrder()  → Crée ordre avec encryptedDest             │  │
+│  │  markOrderFilled()     → Marque comme rempli (relay)               │  │
+│  │  releaseEscrow()       → Libère fonds (attestation TEE)            │  │
+│  │  teeEncryptionPubKey() → Clé publique ECIES du TEE                │  │
+│  └────────────────────────────────────────────────────────────────────┘  │
+│                                                                          │
+│  Events :                                                                │
+│  PrivacyDeposit(commitmentHash, amount, delay) — PAS d'adresse user     │
+│  PrivateOrderPlaced(orderId, user=PrivacyPool, encryptedDest)           │
+│  EscrowReleased(orderId, filler, amount)                                │
+└──────────────────────┬───────────────────────────────────────────────────┘
+                       │
+                       │  ① User dépose dans PrivacyPool via DepositRouter
+                       │
+                       ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│                  TEE Filler (Phala dstack CVM — Intel TDX)               │
+│                                                                          │
+│  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────────┐   │
+│  │  PoolWatcher     │  │  Watcher         │  │  Executor            │   │
+│  │  Detect deposits │  │  Detect orders   │  │  Decrypt dest        │   │
+│  │  Decrypt secrets │  │  from Gateway    │  │  Fresh wallet        │   │
+│  │  Trigger withdraw│  │                  │  │  Bridge to HL        │   │
+│  └──────────────────┘  └──────────────────┘  │  usdSend to dest    │   │
+│                                               └──────────────────────┘   │
+│  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────────┐   │
+│  │  Settler         │  │  Relay           │  │  API (port 3001)     │   │
+│  │  TEE attestation │  │  fillId→sourceId │  │  /api/fill/:orderId  │   │
+│  │  releaseEscrow   │  │  markOrderFilled │  │  fillTxHash, fillId  │   │
+│  └──────────────────┘  └──────────────────┘  │  freshWallet,        │   │
+│                                               │  settleTxHash        │   │
+│  3 clés dérivées dans l'enclave :             └──────────────────────┘   │
+│  • Wallet (signer tx + attestations)                                     │
+│  • Encryption (ECIES decrypt dest + secret)                              │
+│  • FillId secret (keccak256 pour fillId unlinkable)                      │
+└──────────────────────┬───────────────────────────────────────────────────┘
+                       │
+                       │  ② TEE decrypt, fill via fresh wallet, bridge to HL
+                       │
+                       ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│                       Arbitrum Sepolia (Destination Chain)                │
+│                                                                          │
+│  ┌────────────────────────────────────────────────────────────────────┐  │
+│  │              IntentSettler (Fill + Settlement)                      │  │
+│  │                                                                    │  │
+│  │  fillOrder(fillId, recipient, token, amount)                       │  │
+│  │  verifyTEESettlement(orderId, attestation, signature)              │  │
+│  └────────────────────────────────────────────────────────────────────┘  │
+│                                                                          │
+│  ┌─────────────────────────────┐  ┌───────────────────────────────────┐  │
+│  │  TEEVerifier                │  │  FillerRegistry                   │  │
+│  │  verifyAttestation()        │  │  register/stake/slash             │  │
+│  │  verifyAttestationWithQuote │  │  reputation tracking              │  │
+│  │  TDX quote recording       │  │                                   │  │
+│  └─────────────────────────────┘  └───────────────────────────────────┘  │
+│                                                                          │
+│  Events :                                                                │
+│  OrderFilled(fillId, filler, recipient, amount) — fillId ≠ sourceOrderId│
+│  TEESettlementVerified(orderId, filler, enclaveSigner)                   │
+└──────────────────────────────────────────────────────────────────────────┘
+                       │
+                       │  ③ USDC2 → Hyperliquid Bridge2 → usdSend (fresh wallet → dest)
+                       │
+                       ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│                       Hyperliquid Testnet                                 │
+│                                                                          │
+│  Bridge2 : 0x08cfc1B6b2dCF36A1480b99353A354AA8AC56f89                   │
+│  Deposit : USDC2.transfer(bridge, amount) — crédité en < 1 min          │
+│  usdSend : API L1 — transfert interne wallet → wallet (no gas)          │
+│  Minimum : 5 USDC                                                        │
+└──────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
 ## Pourquoi Polkadot × Hyperliquid ?
 
-| Critère | Bridge classique (Wormhole, etc.) | Velora (Polkadot → Arbitrum Sepolia) |
+| Critère | Bridge classique (Wormhole, etc.) | Velora (Polkadot → Hyperliquid) |
 |---------|----------------------------------|-------------------------------------|
-| **Temps utilisateur** | 15-45 min (attente finalité + relay) | ~2s (Instant) ou ~7min (Classic) — au choix |
-| **Settlement** | Synchronous (bloquant) | Asynchronous trustless (~6-8 min, non-bloquant) |
-| **Trust model** | Comité multisig / guardian set | ZK proof BEEFY (trustless, vérifiable on-chain) |
-| **Messaging** | Custom relay / oracle | XCM v5 natif (Polkadot native) |
-| **Interop layer** | Propriétaire | Hyperbridge (open, ISMP-based) |
-| **Capital efficiency** | Lock/mint (capital immobilisé) | Fillers compétitifs (capital rotatif) |
-| **Proof system** | Souvent optimistic (challenge period) | ZK BEEFY (aucun challenge, vérification directe) |
-| **Destination** | Chaîne EVM générique | Arbitrum Sepolia → accès direct Hyperliquid (perps, spot) |
-| **Choix utilisateur** | Aucun (1 mode imposé) | Instant (rapide, fee) OU Classic (lent, gratuit) |
-
-**Avantages clés de cette stack :**
-- XCM v5 est le standard natif de messaging cross-chain dans l'écosystème Polkadot — battle-tested, upgradé régulièrement, et supporté par toutes les parachains
-- Hyperbridge utilise ISMP pour une interopérabilité trustless entre Polkadot et les chaînes EVM — pas de comité multisig, pas de guardian set
-- Les preuves ZK BEEFY permettent de vérifier le consensus Polkadot directement sur un contrat EVM — settlement cryptographiquement garanti
-- Le bridge via Arbitrum Sepolia donne un accès direct à l'orderbook Hyperliquid — l'utilisateur peut ouvrir des positions perps instantanément après le bridge
-- Le modèle intent-based permet une UX comparable à un CEX (fonds disponibles en secondes) avec les garanties d'un bridge trustless
-- **Le choix du mode permet à chaque utilisateur d'optimiser selon ses priorités** : vitesse (Instant) ou économie (Classic)
+| **Privacy** | Aucune — adresses exposées on-chain | 6 couches de protection |
+| **Temps utilisateur** | 15-45 min | ~2s (après privacy lock) |
+| **Settlement** | Synchronous (bloquant) | TEE attestation async (~5-10s) |
+| **Trust model** | Comité multisig / guardian set | TEE attestation (Intel TDX) |
+| **Destination visible** | Oui | Non (ECIES chiffré) |
+| **Mixing** | Non | PrivacyPool time-locked |
+| **Fresh wallet** | Non | Oui — wallet jetable par fill |
+| **Destination** | Chaîne EVM générique | Hyperliquid (perps, spot) |
 
 ---
 
 ## Smart Contracts — Architecture Détaillée
 
-### 1. IntentGateway (Polkadot Asset Hub — Escrow Source)
+### 1. PrivacyPool (Polkadot Hub — Mixing Contract)
 
-Le point d'entrée côté source. Gère la création des ordres (intents), le lock des fonds en escrow, et la libération des fonds vers le filler après vérification de la preuve de settlement. **Le mode de bridge est déterminé par la `feeOffer`** : fee > 0 = Instant Bridge, fee = 0 = Classic Bridge.
-
-**Structure d'un ordre (`Order`) :**
-```
-struct Order {
-    orderId:       bytes32     // Hash unique de l'intent
-    user:          address     // Adresse de l'utilisateur sur Asset Hub
-    token:         address     // Token locké (USDC)
-    amount:        uint256     // Montant locké
-    destChain:     uint32      // Chain ID destination (Arbitrum Sepolia)
-    destAddress:   address     // Adresse de l'utilisateur sur Arbitrum Sepolia
-    feeOffer:      uint256     // Fee offerte au filler (0 = Classic Bridge, >0 = Instant Bridge)
-    deadline:      uint256     // Expiration de l'intent
-    status:        OrderStatus // Pending → Filled → Settled (Instant) | Pending → Fallback → Settled (Classic)
-}
-```
+Contrat de mixing time-locked. L'utilisateur dépose des USDC standardisés avec un commitment hash, une destination chiffrée et un secret chiffré. Le TEE filler trigger le retrait automatiquement après expiration du time-lock.
 
 **Fonctions :**
 
 | Fonction | Description |
 |----------|-------------|
-| `createOrder(token, amount, destChain, destAddress, feeOffer, deadline)` | Lock les fonds en escrow, émet `OrderPlaced`, retourne `orderId`. **feeOffer = 0 → Classic Bridge, feeOffer > 0 → Instant Bridge** |
-| `releaseEscrow(orderId, fillerAddress, proof)` | Vérifie la preuve ZK BEEFY via Hyperbridge, libère les fonds lockés + fees vers le filler **(Instant mode uniquement)** |
-| `executeFallback(orderId)` | Déclenché si aucun filler n'a fill l'intent après `FILLER_WINDOW`. Initie le bridge classique : XCM v5 → Hyperbridge → ISMP → fonds envoyés directement à l'utilisateur côté Arbitrum Sepolia. **Utilisé en mode Classic (fee=0) ou comme safety net en mode Instant si aucun filler ne répond** |
-| `cancelOrder(orderId)` | Annulation par l'utilisateur si deadline dépassée et ordre non rempli (status Pending) |
-| `getOrder(orderId)` | Vue : retourne les détails complets d'un ordre |
-| `getActiveOrders()` | Vue : liste tous les ordres Pending (pour les fillers) |
-
-**Events :**
-```
-OrderPlaced(orderId, user, token, amount, destChain, destAddress, feeOffer, deadline)
-OrderCancelled(orderId, user, refundAmount)
-EscrowReleased(orderId, fillerAddress, amount, fee)
-FallbackExecuted(orderId, user, amount, destAddress)
-```
+| `deposit(amount, commitmentHash, encryptedDest, encryptedSecret, delaySeconds)` | Dépose des USDC standardisés (6-10) avec time-lock. Event `PrivacyDeposit` sans adresse user |
+| `withdraw(secret, feeOffer, deadline)` | Appelé par le TEE filler — vérifie le secret, approuve USDC, appelle `createPrivateOrder()` sur IntentGateway. `msg.sender = PrivacyPool` |
+| `isReady(commitmentHash)` | Vue : vérifie si le time-lock est expiré |
+| `remainingLockTime(commitmentHash)` | Vue : temps restant avant withdrawal possible |
 
 **Sécurité :**
-```
-→ Les fonds sont lockés dans le contrat — l'utilisateur ne peut pas les retirer tant que l'ordre est Pending et non expiré
-→ releaseEscrow() ne peut être appelé qu'avec une preuve valide vérifiée par le module Hyperbridge/ISMP
-→ cancelOrder() n'est possible qu'après deadline ET si status == Pending
-→ Double-fill protection : un orderId ne peut être rempli qu'une seule fois
-→ ReentrancyGuard sur toutes les fonctions mutatives
-→ FILLER_WINDOW (30s) : fenêtre pendant laquelle les fillers peuvent fill l'intent
-  → Mode Instant (fee > 0) : les fillers ont 30s pour fill, sinon executeFallback() prend le relais
-  → Mode Classic (fee = 0) : aucun filler ne va fill → executeFallback() est la voie prévue
-  → executeFallback() initie le bridge classique trustless (XCM v5 → Hyperbridge → ISMP)
-  → L'utilisateur reçoit ses fonds directement sur Arbitrum Sepolia après le settlement (~6-8 min)
-  → Pas de fee filler en mode Classic — l'intégralité du montant est bridgé
-  → Un fill qui arrive APRÈS executeFallback() est rejeté (status déjà Fallback)
-```
+- Montants standardisés enforced : `require(standardAmounts[amount])` — seulement 6, 7, 8, 9, 10 USDC
+- Time-lock : `require(block.timestamp >= releaseTime)`
+- Un commitment ne peut être utilisé qu'une fois
+- Secret vérifié : `keccak256(secret) == commitmentHash`
+- ReentrancyGuard sur toutes les fonctions mutatives
+- Seul le TEE filler appelle `withdraw()` — l'utilisateur ne peut pas
 
-### 2. IntentSettler (Arbitrum Sepolia — Settlement Destination)
+### 2. DepositRouter (Polkadot Hub — Privacy Proxy)
 
-Contrat déployé sur Arbitrum Sepolia qui gère le fill des ordres par les fillers et la vérification du settlement trustless. **Utilisé uniquement en mode Instant Bridge.**
+Proxy qui forward les dépôts vers PrivacyPool. Masque l'adresse de l'utilisateur dans les events `Transfer` ERC-20 — la tx montre `from: DepositRouter` au lieu de `from: Alice`.
 
-**Structure d'un fill (`Fill`) :**
-```
-struct Fill {
-    orderId:       bytes32     // Référence à l'ordre source
-    filler:        address     // Adresse du filler sur Arbitrum Sepolia
-    recipient:     address     // Adresse de l'utilisateur sur Arbitrum Sepolia
-    token:         address     // Token envoyé (USDC sur Arbitrum Sepolia)
-    amount:        uint256     // Montant envoyé à l'utilisateur
-    fillTimestamp: uint256     // Timestamp du fill
-    settled:       bool        // True après vérification de la preuve
-}
-```
+### 3. IntentGateway (Polkadot Hub — Escrow Source)
+
+Point d'entrée pour les ordres privés. Gère l'escrow des fonds et la libération après settlement TEE.
 
 **Fonctions :**
 
 | Fonction | Description |
 |----------|-------------|
-| `fillOrder(orderId, recipient, token, amount)` | Le filler front les fonds → l'utilisateur reçoit ses USDC instantanément. Émet `OrderFilled` |
-| `verifySettlement(orderId, proof)` | Vérifie la preuve ZK BEEFY via ISMP, marque le fill comme settled, envoie le signal de release à Asset Hub |
-| `getFill(orderId)` | Vue : retourne les détails d'un fill |
-| `getPendingSettlements()` | Vue : liste les fills non encore settled (pour les relayers) |
+| `createPrivateOrder(token, amount, destChain, encryptedDest, feeOffer, deadline)` | Crée un ordre avec destination chiffrée. Appelé par PrivacyPool (pas l'utilisateur). Émet `PrivateOrderPlaced` |
+| `markOrderFilled(orderId)` | Appelé par le relay après détection du fill sur la destination |
+| `releaseEscrow(orderId, fillerAddress, attestation)` | Vérifie l'attestation TEE et libère les fonds vers le filler |
+| `cancelOrder(orderId)` | Annulation par l'utilisateur si deadline dépassée et ordre non rempli |
+| `teeEncryptionPubKey()` | Vue : clé publique ECIES du TEE (pour chiffrer dest + secret) |
+| `getOrder(orderId)` | Vue : détails complets d'un ordre |
+| `getActiveOrders()` | Vue : liste des ordres Pending |
 
-**Events :**
-```
-OrderFilled(orderId, filler, recipient, token, amount, fillTimestamp)
-SettlementVerified(orderId, filler, proofHash)
-```
+### 4. IntentSettler (Arbitrum Sepolia — Settlement Destination)
 
-**Sécurité :**
-```
-→ fillOrder() vérifie que l'orderId n'a pas déjà été rempli (double-fill protection)
-→ fillOrder() vérifie que le filler a suffisamment de fonds pour couvrir le montant
-→ verifySettlement() ne peut réussir qu'avec une preuve ZK BEEFY valide
-→ Le filler prend un risque temporaire (~6-8 min entre fill et settlement)
-→ Si le settlement échoue (preuve invalide), le filler ne récupère pas ses fonds lockés côté source
-→ ReentrancyGuard + Pausable pour les cas d'urgence
-```
+Contrat de fill et settlement sur la destination. Le TEE filler appelle `fillOrder()` avec un `fillId` unlinkable.
 
-### 3. FallbackReceiver (Arbitrum Sepolia — Réception Classic Bridge)
-
-Contrat déployé sur Arbitrum Sepolia qui reçoit les fonds en mode Classic Bridge. Quand l'utilisateur choisit le mode Classic (fee = 0), les fonds arrivent directement via le pipeline trustless, sans passer par un filler.
-
-```
-→ receiveFallbackFunds(orderId, recipient, token, amount)
-→ Appelé par le module ISMP après vérification ZK BEEFY
-→ Transfère les USDC directement à l'utilisateur
-→ Protection contre la double-livraison (mapping delivered)
-→ L'utilisateur reçoit 100% du montant (aucune fee filler)
-```
-
-### 4. FillerRegistry (Arbitrum Sepolia — Registre des Fillers)
-
-Contrat optionnel de registre pour les fillers. Permet aux utilisateurs de vérifier la réputation et la liquidité des fillers actifs. **Pertinent uniquement pour le mode Instant Bridge.**
+**Fonctions :**
 
 | Fonction | Description |
 |----------|-------------|
-| `register(stake)` | Un filler stake des USDC comme garantie de solvabilité (min 100 USDC) |
-| `unregister()` | Retrait du stake (cooldown 24h) |
-| `slash(filler, orderId)` | Slash le stake si un filler ne settle pas (gouvernance) |
-| `getFillerInfo(filler)` | Vue : stake, ordres remplis, taux de settlement, score |
-| `getActiveFillers()` | Vue : liste des fillers actifs triés par score |
+| `fillOrder(fillId, recipient, token, amount)` | Le filler front les fonds avec un fillId unlinkable. Émet `OrderFilled` |
+| `verifyTEESettlement(orderId, attestation, signature)` | Vérifie l'attestation TEE signée par l'enclave |
+| `verifyTEESettlementWithQuote(orderId, attestation, signature, tdxQuote)` | Idem + enregistre le TDX quote hash on-chain |
+| `getFill(orderId)` | Vue : détails d'un fill |
 
-### 5. Settlement Pipeline — Modules
+### 5. TEEVerifier (Arbitrum Sepolia — Attestation Verification)
 
-#### XCM v5 (Cross-Consensus Messaging)
+Vérifie les attestations TEE et enregistre les TDX quotes on-chain.
 
-Le protocole de messaging natif de Polkadot. Utilisé pour initier le processus de settlement depuis Asset Hub. **Utilisé par les deux modes.**
+| Fonction | Description |
+|----------|-------------|
+| `verifyAttestation(orderId, attestation, signature)` | Vérifie signature ECDSA de l'enclave |
+| `verifyAttestationWithQuote(orderId, attestation, signature, tdxQuote)` | Vérifie + enregistre TDX quote hash |
+| `addTrustedEnclave(enclaveAddress)` | Ajoute une enclave de confiance (owner only) |
 
-```
-XCM v5 apporte :
-  → Asset transfers trustless entre parachains
-  → Programmabilité améliorée (Transact, ExchangeAsset)
-  → Dry-run execution pour estimer les fees
-  → Support natif d'Asset Hub comme hub de liquidité
-```
+### 6. FillerRegistry (Arbitrum Sepolia)
 
-#### Hyperbridge (Interoperability Layer)
+Registre des fillers avec staking et réputation.
 
-Couche d'interopérabilité trustless entre Polkadot et les chaînes EVM. Utilise ISMP comme protocole de transport.
+| Fonction | Description |
+|----------|-------------|
+| `register(stake)` | Stake USDC comme garantie de solvabilité |
+| `recordFill(filler, orderId)` | Enregistre un fill réussi |
+| `recordSettlement(filler, orderId)` | Enregistre un settlement réussi |
+| `slash(filler, orderId)` | Slash en cas de comportement malveillant |
 
-```
-Hyperbridge :
-  → Parachain Polkadot dédiée à l'interopérabilité
-  → Vérifie le consensus Polkadot via preuves ZK BEEFY
-  → Relaie les messages cross-chain via ISMP
-  → Pas de comité multisig — vérification cryptographique pure
-```
-
-#### ZK Proof BEEFY (Bridge Efficiency Enabling Finality Yielder)
-
-Le mécanisme de preuve qui permet de vérifier le consensus Polkadot sur une chaîne EVM. **C'est la base de la sécurité des deux modes.**
-
-```
-BEEFY :
-  → Protocole de finalité complémentaire à GRANDPA
-  → Les validators Polkadot signent des commitment roots
-  → Ces signatures sont agrégées et vérifiables via une preuve ZK
-  → Un contrat EVM peut vérifier la preuve → confirmer que Asset Hub a bien locké les fonds
-  → Trustless : pas besoin de faire confiance à un relayer, la preuve est auto-vérifiable
-```
-
-#### ISMP (Interoperable State Machine Protocol)
-
-Le protocole de transport utilisé par Hyperbridge pour relayer les messages entre chaînes.
-
-```
-ISMP :
-  → Protocole de messaging inter-chaîne basé sur des preuves d'état
-  → Chaque message contient une preuve de l'état source
-  → Le contrat destination vérifie la preuve avant d'exécuter le message
-  → Compatible avec n'importe quelle chaîne capable de vérifier des preuves Merkle
-  → Mode Instant : transporte la preuve de settlement pour libérer l'escrow vers le filler
-  → Mode Classic : transporte les fonds directement vers le FallbackReceiver
-```
-
-### 6. Libraries & Utils
+### 7. Libraries
 
 | Contrat | Description |
 |---------|-------------|
-| `OrderLib.sol` | Encoding/decoding des ordres, hash computation, status transitions |
-| `ProofVerifier.sol` | Vérification des preuves ZK BEEFY, interface avec le module ISMP |
-| `BEEFYVerifier.sol` | Vérification des commitment roots BEEFY et des storage proofs |
-| `FeeCalculator.sol` | Calcul des fees dynamiques basé sur la liquidité disponible et la congestion **(Instant Bridge uniquement)** |
-| `Constants.sol` | `MIN_FEE_BPS = 5`, `MAX_FEE_BPS = 100`, `FILLER_WINDOW = 30`, `SETTLEMENT_TIMEOUT = 3600`, `MAX_ORDER_AMOUNT`, chain IDs |
+| `OrderLib.sol` | Encoding/decoding des ordres, `computeOrderId()`, `computePrivateOrderId()`, status transitions |
+| `Constants.sol` | `MIN_FEE_BPS = 5`, `MAX_FEE_BPS = 100`, `FILLER_WINDOW = 30`, `MIN_ORDER_AMOUNT = 1e6`, `MAX_ORDER_AMOUNT = 1_000_000e6` |
 
 ---
 
-## Que se passe-t-il quand Alice bridge 100 USDC ?
-
-### Mode A — Instant Bridge (Alice paie une fee, reçoit en ~2s)
-
-#### Phase 1 — Exécution Instantanée (~2 secondes)
+## Flow complet — Alice bridge 10 USDC
 
 ```
-Step 1 : Alice choisit "Instant Bridge" et fixe sa fee (ex: 10 bps = 0.10 USDC)
-  → Alice appelle createOrder() sur IntentGateway (Asset Hub)
-  → 100 USDC lockés dans l'escrow
-  → Event OrderPlaced émis avec feeOffer = 0.10 USDC
-  → orderId = keccak256(user, token, amount, destChain, destAddress, feeOffer, nonce)
+T+0s    Alice choisit 10 USDC + adresse destination + délai 30s
+        → Frontend chiffre dest + secret avec TEE pubkey (ECIES secp256k1)
+        → DepositRouter.deposit(10e6, commitmentHash, encryptedDest, encryptedSecret, 30)
+        → PrivacyPool reçoit les 10 USDC
+        → Event PrivacyDeposit(commitmentHash, 10e6, 30, encryptedSecret) — pas d'adresse user
 
-Step 2 : Les fillers du réseau détectent l'event OrderPlaced
-  → Filler A voit : 100 USDC, fee = 0.10 USDC, deadline = 1h
-  → Filler A a 100 USDC de liquidité sur Arbitrum Sepolia → décide de fill
+T+30s   Privacy lock expire
+        → PoolWatcher (TEE) détecte isReady(commitmentHash) == true
+        → TEE déchiffre le secret avec la clé privée ECIES
+        → TEE appelle PrivacyPool.withdraw(secret, feeOffer, deadline)
+        → PrivacyPool crée ordre privé sur IntentGateway
+        → Event PrivateOrderPlaced(orderId, user=PrivacyPool, encryptedDest)
 
-Step 3 : Filler A appelle fillOrder(orderId, alice, USDC, 100) sur IntentSettler (Arbitrum Sepolia)
-  → Alice reçoit ~99.90 USDC sur Arbitrum Sepolia instantanément
-  → Event OrderFilled émis
+T+32s   TEE Executor détecte l'ordre
+        → Déchiffre l'adresse de destination (ECIES)
+        → Génère fillId = keccak256(sourceOrderId, teeSecret)
+        → Crée fresh wallet (clé aléatoire, single-use)
+        → Transfert USDC2 + ETH gas vers fresh wallet
+        → Fresh wallet appelle USDC2.transfer(HL_BRIDGE_ADDRESS, amount)
+        → Attend crédit HL (~30-60s)
+        → Fresh wallet exécute usdSend(destination, amount)
+        → Vérifie que les fonds sont arrivés
+        → Fresh wallet jeté
 
-Step 4 : Alice ouvre une position 10x long ETH sur Hyperliquid
-  → Aucune attente — les fonds sont disponibles immédiatement
-```
+T+35s   TEE Relay
+        → Détecte OrderFilled(fillId) sur Arbitrum Sepolia
+        → Mappe fillId → sourceOrderId
+        → Appelle markOrderFilled(sourceOrderId) sur IntentGateway
 
-#### Phase 2 — Settlement Trustless (~6-8 minutes, en arrière-plan)
+T+40s   TEE Settlement
+        → Signe attestation TEE pour sourceOrderId
+        → releaseEscrow(sourceOrderId, fillerAddress, attestation)
+        → Fonds libérés sur Polkadot Hub
+        → Ordre terminé
 
-```
-Step 5 : XCM v5 initie le messaging depuis Asset Hub
-  → Le message contient : orderId, preuve du lock, état de l'escrow
-  → XCM route le message vers Hyperbridge (parachain)
-
-Step 6 : Hyperbridge reçoit le message XCM
-  → Hyperbridge attend la finalité BEEFY sur le block contenant le lock
-  → Les validators Polkadot signent le commitment root du block
-  → Hyperbridge génère la preuve ZK BEEFY
-
-Step 7 : ISMP transporte la preuve vers Arbitrum Sepolia
-  → Le relayer Hyperbridge soumet la preuve au contrat ISMP sur Arbitrum Sepolia
-  → verifySettlement() est appelé sur IntentSettler
-
-Step 8 : IntentSettler vérifie la preuve ZK BEEFY
-  → Preuve valide → le fill est marqué comme settled
-  → Signal envoyé à Asset Hub (via le même pipeline inverse)
-
-Step 9 : IntentGateway reçoit la confirmation de settlement
-  → releaseEscrow(orderId, fillerA) est exécuté
-  → Filler A récupère 100 USDC (montant locké complet)
-  → L'ordre passe en status Settled
-```
-
-**Important** : Alice n'attend pas le settlement. Elle a ses USDC dès le Step 3 et peut trader immédiatement. Le settlement protège le filler — il est **toujours** remboursé tant que le lock est valide côté Asset Hub.
-
-### Mode B — Classic Bridge (Alice ne paie pas de fee, reçoit en ~7 min)
-
-```
-Step 1 : Alice choisit "Classic Bridge" dans le frontend
-  → Alice appelle createOrder() sur IntentGateway (Asset Hub) avec feeOffer = 0
-  → 100 USDC lockés dans l'escrow
-  → Event OrderPlaced émis avec feeOffer = 0
-
-Step 2 : Le FILLER_WINDOW expire (~30s) — aucun filler ne prend l'ordre (fee = 0)
-  → L'ordre reste en status Pending
-  → C'est le comportement attendu en mode Classic
-
-Step 3 : executeFallback(orderId) est appelé (permissionless — par Alice, un keeper, ou le frontend)
-  → L'ordre passe en status Fallback
-  → Event FallbackExecuted émis
-  → Le contrat initie un transfer direct via XCM v5
-
-Step 4 : XCM v5 → Hyperbridge → ZK proof BEEFY → ISMP → Arbitrum Sepolia
-  → Pipeline classique trustless
-  → Les fonds vont DIRECTEMENT à Alice (pas à un filler)
-
-Step 5 : Le contrat FallbackReceiver sur Arbitrum Sepolia reçoit les fonds
-  → 100 USDC crédités à Alice sur Arbitrum Sepolia
-  → Aucune fee filler — Alice récupère 100% du montant
-
-Step 6 : Alice peut trader sur Hyperliquid
-  → Délai total : ~6-8 minutes (bridge classique trustless)
-
-Résumé :
-  → Alice a choisi le Classic Bridge → pas de fee, mais ~7 min d'attente
-  → Le pipeline est strictement trustless (ZK proof, aucun intermédiaire)
-  → L'intégralité du montant est livré (100 USDC sur 100 USDC)
-```
-
-**Race condition protection** : Si un filler appelle `fillOrder()` pendant que `executeFallback()` est en cours de traitement, le contrat IntentSettler vérifie le status de l'ordre. Un ordre en status `Fallback` rejette tout `fillOrder()`. Inversement, si un filler fill l'intent juste avant l'appel `executeFallback()`, l'ordre passe en status `Filled` et `executeFallback()` revert. Le status est atomique — il n'y a jamais de double délivrance.
-
-**Safety net en mode Instant** : Si l'utilisateur choisit Instant Bridge (fee > 0) mais qu'aucun filler ne répond dans le `FILLER_WINDOW`, le système bascule automatiquement en mode Classic via `executeFallback()`. L'utilisateur reçoit ses fonds dans tous les cas — la seule différence est le délai.
-
----
-
-## Modèle Économique des Fillers
-
-```
-Le filler est un LP qui fournit de la liquidité instantanée côté destination.
-→ Pertinent uniquement pour le mode Instant Bridge.
-
-Revenue du filler :
-  → Fees par ordre rempli (fixées par l'utilisateur dans feeOffer)
-  → Volume × fee average = revenu journalier
-  → Les fillers ignorent les ordres avec feeOffer = 0 (Classic Bridge)
-
-Risques du filler :
-  → Capital lock temporaire (~6-8 min entre fill et settlement)
-  → Smart contract risk (bug dans IntentGateway ou IntentSettler)
-  → Settlement failure (preuve invalide — extrêmement rare avec ZK BEEFY)
-
-Capital efficiency :
-  → Un filler avec 10,000 USDC peut fill ~100-200 ordres/jour
-  → Rotation du capital : fill → settlement (~8 min) → capital libre → fill suivant
-  → ~7.5 rotations/heure × 24h = ~180 rotations/jour théoriques
-
-Compétition :
-  → Les fillers sont en compétition pour remplir les ordres Instant
-  → Les ordres avec les fees les plus élevées sont remplis en premier
-  → Plus il y a de fillers → fees plus basses → meilleur prix pour l'utilisateur
-  → Équilibre naturel : les fees convergent vers le coût du capital + risque
-```
-
-```
-Formule du rendement filler :
-
-APR_filler = (avg_fee × fills_per_day × 365) / capital_deployed
-
-Exemple :
-  avg_fee = 0.10 USDC (10 bps sur 100 USDC)
-  fills_per_day = 150
-  capital = 10,000 USDC
-
-  APR = (0.10 × 150 × 365) / 10,000 = 54.75%
+Total : ~40s (dont 30s de privacy lock choisi par Alice)
+Sans privacy lock (instantané) : ~10s total
 ```
 
 ---
 
-## Fees & Distribution
+## TEE Settlement — Phala dstack
 
-```
-Mode Instant — Ordre de 100 USDC avec feeOffer = 0.10 USDC
-
-Alice (User)                          Filler
-  │                                     │
-  │  lock 100 USDC                      │
-  │  ────────────────────►              │
-  │  (IntentGateway escrow)             │
-  │                                     │
-  │         fillOrder()                 │
-  │  ◄────────────────────              │
-  │  reçoit ~99.90 USDC sur Arbitrum Sepolia   │  dépense 100 USDC de sa liquidité
-  │                                     │
-  │  ~~ settlement trustless ~~         │
-  │  ~~ (~6-8 min) ~~                  │
-  │                                     │
-  │                                     │  releaseEscrow()
-  │                                     │  ◄──────────────
-  │                                     │  récupère 100 USDC (escrow complet)
-  │                                     │
-  │  Profit filler : 0.10 USDC (fee)   │
-
-Résultat :
-  Alice : a payé 0.10 USDC de fee, reçu ~99.90 USDC instantanément sur Arbitrum Sepolia
-  Filler : a immobilisé 100 USDC pendant ~8 min, gagné 0.10 USDC
-```
-
-```
-Mode Classic — Ordre de 100 USDC avec feeOffer = 0
-
-Alice (User)                          Pipeline Trustless
-  │                                     │
-  │  lock 100 USDC (fee = 0)            │
-  │  ────────────────────►              │
-  │  (IntentGateway escrow)             │
-  │                                     │
-  │  ~30s~ FILLER_WINDOW expire         │
-  │                                     │
-  │  executeFallback()                  │
-  │  ────────────────────►              │
-  │                                     │  XCM v5 → Hyperbridge → ZK BEEFY → ISMP
-  │                                     │
-  │  ~6-8 min~                          │
-  │                                     │
-  │  receiveFallbackFunds()             │
-  │  ◄────────────────────              │
-  │  reçoit 100 USDC sur Arbitrum Sepolia      │
-  │  (intégralité, aucune fee)          │
-
-Résultat :
-  Alice : a payé 0 fee filler, reçu 100 USDC après ~7 min sur Arbitrum Sepolia
-  Aucun filler impliqué — pipeline trustless direct
-```
-
-**Fee dynamique (Mode Instant uniquement) :**
-```
-Le feeOffer est fixé par l'utilisateur, mais un module FeeCalculator peut suggérer :
-
-suggested_fee = base_fee + congestion_premium + size_premium
-
-Où :
-  base_fee          = fee minimum viable pour les fillers (ex: 5 bps)
-  congestion_premium = augmente si beaucoup d'ordres pending / peu de fillers actifs
-  size_premium       = augmente pour les gros ordres (risque de capital plus élevé)
-
-→ L'utilisateur peut overrider la suggestion et fixer sa propre fee
-→ Une fee plus élevée = fill plus rapide (priorité des fillers)
-→ Une fee trop basse = risque de ne pas être fill → fallback automatique en Classic
-→ Fee = 0 → Classic Bridge garanti (aucun filler ne prendra l'ordre)
-```
-
----
-
-## Settlement Pipeline — Détail Technique
+Le filler tourne dans une **Confidential VM** (CVM) Phala dstack basée sur **Intel TDX**.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                    SETTLEMENT TIMELINE                           │
+│                    SETTLEMENT TEE (~5-10s)                        │
 │                                                                 │
-│  MODE INSTANT (avec filler) :                                   │
-│  T+0s      Alice lock 100 USDC, fee=0.10 (IntentGateway)       │
-│  T+1s      Event OrderPlaced émis                               │
-│  T+2s      Filler détecte + fillOrder() (Arbitrum Sepolia)              │
-│            → Alice a ses USDC, peut trader                      │
-│                                                                 │
-│  ─── SETTLEMENT EN ARRIÈRE-PLAN ───                             │
-│                                                                 │
-│  T+30s     Finalité du block Asset Hub (GRANDPA)                │
-│  T+1min    BEEFY validators signent le commitment root          │
-│  T+2min    Hyperbridge collecte les signatures BEEFY            │
-│  T+3min    Hyperbridge génère la preuve ZK                      │
-│  T+4min    ISMP relaie la preuve vers Arbitrum Sepolia                  │
-│  T+5min    verifySettlement() sur IntentSettler                  │
-│  T+6min    Signal retour vers Asset Hub                         │
-│  T+7min    releaseEscrow() → filler récupère ses fonds + fees   │
-│                                                                 │
-│  Total settlement : ~6-8 minutes                                │
-│  Temps perçu par Alice : ~2 secondes                            │
-├─────────────────────────────────────────────────────────────────┤
-│  MODE INSTANT — FALLBACK (aucun filler disponible) :            │
-│  T+0s      Alice lock 100 USDC, fee=0.10 (IntentGateway)       │
-│  T+1s      Event OrderPlaced émis                               │
-│  T+30s     FILLER_WINDOW expire — aucun filler n'a fill        │
-│  T+30s     executeFallback() déclenché automatiquement          │
-│            → Bascule transparente en mode Classic               │
-│                                                                 │
-│  ─── PIPELINE TRUSTLESS (FALLBACK) ───                          │
-│                                                                 │
-│  T+1min    XCM v5 initie le transfer                            │
-│  T+2min    BEEFY validators signent le commitment root          │
-│  T+3min    Hyperbridge génère la preuve ZK                      │
-│  T+5min    ISMP relaie vers Arbitrum Sepolia                            │
-│  T+7min    FallbackReceiver → Alice reçoit 100 USDC             │
-│            (fee non prélevée — aucun filler n'a fill)           │
-│                                                                 │
-│  Total : ~6-8 minutes                                           │
-│  Note : la fee proposée n'est PAS déduite (aucun fill)         │
-├─────────────────────────────────────────────────────────────────┤
-│  MODE CLASSIC (sans filler) :                                   │
-│  T+0s      Alice lock 100 USDC, fee=0 (IntentGateway)          │
-│  T+1s      Event OrderPlaced émis                               │
-│  T+30s     FILLER_WINDOW expire — aucun filler                  │
-│  T+30s     executeFallback() déclenché                          │
-│                                                                 │
-│  ─── PIPELINE TRUSTLESS DIRECT ───                              │
-│                                                                 │
-│  T+1min    XCM v5 initie le transfer                            │
-│  T+2min    BEEFY validators signent le commitment root          │
-│  T+3min    Hyperbridge génère la preuve ZK                      │
-│  T+5min    ISMP relaie vers Arbitrum Sepolia                            │
-│  T+7min    FallbackReceiver → Alice reçoit 100 USDC             │
-│                                                                 │
-│  Total : ~6-8 minutes                                           │
-│  Temps perçu par Alice : ~6-8 minutes (pas d'accélération)     │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-**Composants du pipeline :**
-
-| Composant | Rôle | Latence |
-|-----------|------|---------|
-| XCM v5 | Messaging cross-consensus depuis Asset Hub | ~30s (finalité block) |
-| GRANDPA | Finalité du block Polkadot | ~30s |
-| BEEFY | Signatures des validators sur le commitment root | ~1-2 min |
-| Hyperbridge | Agrégation signatures + génération preuve ZK | ~2-3 min |
-| ISMP | Transport de la preuve vers Arbitrum Sepolia | ~1 min |
-| IntentSettler | Vérification on-chain de la preuve ZK (Mode Instant) | ~1 tx |
-| FallbackReceiver | Réception des fonds (Mode Classic) | ~1 tx |
-| Signal retour | Confirmation settlement vers Asset Hub (Mode Instant) | ~1-2 min |
-| IntentGateway | Release de l'escrow (Mode Instant) | ~1 tx |
-
----
-
-## TEE Settlement — Fast Path via Phala dstack + Dépôts Anonymes
-
-Le settlement TEE est un **fast path** (~5-10s) qui s'intercale entre le fill instantané et le settlement ZK BEEFY classique. Le filler tourne dans une **Confidential VM** (dstack, Intel TDX) et dérive un wallet anonyme qui sert d'intermédiaire de confidentialité.
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    SETTLEMENT 3 COUCHES                          │
-│                                                                 │
-│  Couche 1 — TEE Fast Path (Phala dstack) : ~5-10s              │
-│  ─────────────────────────────────────────────                  │
 │  Le filler tourne dans une CVM dstack (Intel TDX).              │
-│  Il dérive un wallet anonyme via dstack SDK getKey().           │
-│  Ce wallet sert d'intermédiaire : pas de lien on-chain         │
-│  entre l'adresse source (Polkadot) et le dépôt HL.            │
+│  3 clés dérivées indépendantes dans l'enclave :                 │
+│  • Wallet : signer tx, attestations, trigger withdraws          │
+│  • Encryption : déchiffrer dest + secret (ECIES secp256k1)      │
+│  • FillId secret : keccak256(sourceOrderId, secret) = unlinkable│
 │                                                                 │
-│  T+2s    Filler fill l'ordre (Alice reçoit USDC)               │
-│  T+3s    dstack getKey() → wallet dérivé (anonyme)             │
-│  T+5s    dstack tdxQuote() → attestation TDX                   │
-│  T+7s    Signe attestation avec la clé TEE-dérivée             │
-│  T+8s    verifyTEESettlement() sur IntentSettler               │
-│  T+9s    TDX quote enregistré on-chain (auditabilité)          │
-│  T+10s   releaseEscrow() sur IntentGateway                     │
+│  T+0s    Filler détecte l'ordre PrivateOrderPlaced              │
+│  T+1s    Déchiffre dest avec clé ECIES dans le TEE              │
+│  T+2s    Génère fillId unlinkable                               │
+│  T+3s    Crée fresh wallet, transfert USDC2 + gas               │
+│  T+4s    Fresh wallet bridge vers Hyperliquid                    │
+│  T+5s    usdSend du fresh wallet → destination                  │
+│  T+7s    dstack tdxQuote() → attestation TDX                    │
+│  T+8s    Signe attestation avec la clé wallet TEE               │
+│  T+9s    releaseEscrow() sur IntentGateway                      │
+│  T+10s   Escrow libéré, ordre terminé                           │
 │                                                                 │
-│  Couche 2 — ZK BEEFY Fallback : ~6-8 min                      │
-│  ─────────────────────────────────────────────                  │
-│  Si le TEE échoue/timeout, le settlement BEEFY prend le relais.│
-│  Même pipeline qu'avant (GRANDPA → BEEFY → Hyperbridge → ISMP) │
-│                                                                 │
-│  Couche 3 — Montants standardisés + Délai de livraison         │
-│  ─────────────────────────────────────────────                  │
-│  Montants fixes (6-10 USDC) + délai configurable (0-1h)       │
-│  empêchent la corrélation par montant et timing.               │
+│  Attestation enregistrée on-chain :                             │
+│  • TEEVerifier.AttestationVerified(orderId, signer)             │
+│  • TEEVerifier.TDXQuoteRecorded(orderId, tdxQuoteHash)          │
+│  • IntentSettler.TEESettlementVerified(orderId, filler, enclave)│
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -759,132 +350,117 @@ Le settlement TEE est un **fast path** (~5-10s) qui s'intercale entre le fill in
 - `tdxQuote()` génère une attestation TDX prouvant l'exécution sur hardware authentique
 - Les measurements RTMR3 contiennent : app-id, compose-hash, key-provider
 - Le contrat `TEEVerifier` vérifie la signature ECDSA + enregistre le TDX quote hash on-chain
-- Si le TEE est compromis, le ZK BEEFY fallback protège toujours le protocole
 
-**Dépôts anonymes** :
-- Le wallet TEE-dérivé agrège les fills de multiples utilisateurs
-- On-chain, les dépôts vers Hyperliquid viennent du wallet TEE — pas de lien avec les adresses source
-- L'attestation TDX prouve que le filler a exécuté correctement sans révéler le mapping user↔dépôt
-- 3 modes : `dstack` (production CVM), `simulator` (dev local), `mock` (compatibilité)
+**3 modes TEE** :
 
-**Comparaison des couches de settlement** :
-
-| Couche | Temps | Trust Model | Quand utilisé |
-|--------|-------|-------------|---------------|
-| TEE (dstack) | ~5-10s | Hardware TDX + attestation TDX + wallet dérivé | Fast path par défaut |
-| ZK BEEFY | ~6-8 min | Trustless (preuves cryptographiques) | Fallback si TEE échoue |
-| Delayed delivery | configurable | Délai choisi par l'utilisateur | Renforcement privacy (timing) |
+| Mode | Transport | Clés | Usage |
+|------|-----------|------|-------|
+| `dstack` | Unix socket `/var/run/dstack.sock` | Dérivées par dstack KMS (liées à l'app-id) | Production (Phala Cloud) |
+| `simulator` | HTTP `localhost:8090` | Dérivées par simulateur | Dev local avec Docker |
+| `mock` | Aucun | Dérivées de `TEE_PRIVATE_KEY` via keccak256 | Hackathon / tests |
 
 ---
 
-## Route A — Polkadot → Arbitrum Sepolia → Hyperliquid Testnet
-
-La route principale du bridge :
+## Route — Polkadot → Arbitrum Sepolia → Hyperliquid Testnet
 
 ```
 Polkadot Hub (source)  →  Arbitrum Sepolia (destination)  →  Hyperliquid Testnet (trading)
-     [escrow]                [fill + settle]                    [official bridge deposit]
+     [PrivacyPool +          [fill + settle]                    [Bridge2 + usdSend]
+      IntentGateway]
 
-T+0s    Lock mock USDC sur Polkadot Hub
-T+2s    Filler front USDC2 sur Arbitrum Sepolia → user reçoit
-T+5-10s TEE settlement (fast path)
-T+...   User dépose USDC2 sur Hyperliquid Testnet via le bridge officiel
+T+0s    Lock USDC dans PrivacyPool sur Polkadot Hub
+T+Xs    Privacy lock expire, TEE trigger withdraw
+T+2s    TEE fill via fresh wallet sur Arbitrum Sepolia
+T+3s    Fresh wallet bridge USDC2 vers Hyperliquid
+T+4s    Fresh wallet usdSend vers destination
+T+10s   TEE settlement (attestation TDX + releaseEscrow)
 ```
 
 **USDC2** sur Arbitrum Sepolia : `0x1baAbB04529D43a73232B713C0FE471f7c7334d5`
-Ce token est compatible avec le bridge officiel Hyperliquid Testnet. L'utilisateur peut déposer ses USDC2 directement vers Hyperliquid Testnet pour trader (perps, spot).
+Ce token est compatible avec le bridge officiel Hyperliquid Testnet. Minimum 5 USDC.
 
 ---
 
-## Flow Utilisateur — Bridge (Asset Hub → Arbitrum Sepolia)
+## Frontend — Flow Utilisateur
 
 ```
-Step 1: Connecter wallet (Polkadot.js, SubWallet, Talisman) sur Asset Hub
-        + connecter wallet EVM (MetaMask, Rabby) sur Arbitrum Sepolia
+Step 1: Connecter wallet EVM (MetaMask, Rabby) sur Polkadot Hub Testnet
+        → Si besoin, mint 10 USDC via le Faucet (fast polling, ~2-3s)
 
-Step 2: Choisir le mode de bridge :
-        ┌───────────────────────────┬────────────────────────────┐
-        │     INSTANT BRIDGE        │      CLASSIC BRIDGE        │
-        │     ~2 secondes           │      ~6-8 minutes          │
-        │     Fee: 5-100 bps        │      Fee: 0                │
-        │     [Slider de fee]       │      [Pas de fee]          │
-        └───────────────────────────┴────────────────────────────┘
+Step 2: Choisir le montant (6-10 USDC, nombres entiers uniquement)
+        → Bouton MAX : sélectionne le solde du wallet (clampé 6-10)
+        → Bouton MIN : sélectionne 6 USDC
+        → Toast d'explication si montant invalide (< 6, > 10, décimal)
 
-Step 3: Entrer le montant à bridge (ex: 100 USDC)
-        → Mode Instant : affichage fee estimée + montant reçu (~99.90 USDC)
-        → Mode Classic : affichage "Vous recevez 100 USDC dans ~7 min"
+Step 3: Configurer le privacy lock (rouage)
+        → Instant, 15s, 30s, 1 min, ou custom (jusqu'à 1h)
 
-Step 4: Confirmer la transaction sur Asset Hub
-        → createOrder() lock les USDC dans l'escrow
-        → Event OrderPlaced émis → visible dans le dashboard
+Step 4: (Optionnel) Entrer une adresse de destination différente
+        → Pour une privacy maximale, utiliser un wallet séparé
 
-Step 5a (Mode Instant — filler disponible): Fill en ~2s
-        → Le dashboard passe à "Filling..." puis "Filled!"
-        → Les USDC apparaissent sur Arbitrum Sepolia instantanément
+Step 5: Cliquer "Bridge" → Approve USDC → Deposit dans PrivacyPool
+        → Countdown de privacy lock affiché
+        → Steps visuels : Approve → Deposit → Privacy Lock → Filler → Settlement
 
-Step 5b (Mode Instant — aucun filler): Safety net
-        → Après FILLER_WINDOW (~30s) : "No filler — switching to classic bridge..."
-        → executeFallback() déclenché automatiquement
-        → Les USDC arrivent après ~6-8 min (l'utilisateur est protégé)
-
-Step 5c (Mode Classic): Pipeline direct
-        → "Classic bridge in progress..."
-        → executeFallback() déclenché après FILLER_WINDOW
-        → Pipeline XCM v5 → Hyperbridge → ZK BEEFY → ISMP
-        → Les USDC arrivent sur Arbitrum Sepolia après ~6-8 min
-
-Step 6: Trader sur Hyperliquid
-        → Ouvrir des positions perps, spot, etc.
-
-Step 7: (Arrière-plan, Mode Instant uniquement) Settlement trustless
-        → Le dashboard affiche la progression : XCM → Hyperbridge → ZK → ISMP → Settled
-        → Le filler est remboursé automatiquement
+Step 6: Écran de completion
+        → "Bridge Complete" avec checkmark vert
+        → Montant envoyé et reçu (fees déduits, 2 décimales)
+        → TX hashes avec liens : Withdraw TX, Deposit TX, HL Bridge TX
+        → Fresh Wallet address avec bouton copier
+        → TEE Settlement TX → lien Arbiscan
+        → Escrow Release TX → lien Polkadot Blockscout
+        → Section "TEE Trace" : badge vert "Verified by TEE (dstack)"
+          avec Fill ID, Single-use Wallet, Attestation TX
 ```
 
 ---
 
-## Flow Utilisateur — Bridge Retour (Arbitrum Sepolia → Asset Hub)
+## Fees & Distribution
 
 ```
-Step 1: Sur le dashboard, sélectionner "Bridge Back"
+Ordre de 10 USDC avec feeBps = 10 (0.1%)
 
-Step 2: Choisir le mode : Instant Bridge ou Classic Bridge
+Alice (User)                          TEE Filler
+  │                                     │
+  │  deposit 10 USDC → PrivacyPool     │
+  │  ────────────────────►              │
+  │  (via DepositRouter)                │
+  │                                     │
+  │  ~~ privacy lock ~~                │
+  │                                     │
+  │                                     │  TEE decrypt secret
+  │                                     │  withdraw → createPrivateOrder
+  │                                     │  TEE decrypt dest
+  │                                     │  fillOrder via fresh wallet
+  │                                     │  bridge to HL + usdSend
+  │                                     │
+  │  Bob reçoit ~9.99 USDC sur HL      │
+  │  ◄────────────────────              │
+  │  (montant tronqué à 2 décimales)   │
+  │                                     │
+  │  ~~ TEE settlement ~~              │
+  │                                     │
+  │                                     │  releaseEscrow()
+  │                                     │  récupère 10 USDC sur Polkadot Hub
+  │                                     │
+  │  Profit filler : 0.01 USDC (fee)   │
 
-Step 3: Entrer le montant à bridge retour (ex: 150 USDC — profit inclus)
-        → Mode Instant : createOrder() sur IntentGateway côté Arbitrum Sepolia (fee > 0)
-        → Mode Classic : createOrder() sur IntentGateway côté Arbitrum Sepolia (fee = 0)
+Résultat :
+  Alice : a déposé 10 USDC, Bob a reçu ~9.99 USDC sur Hyperliquid
+  Filler : a immobilisé les fonds ~10s, gagné 0.01 USDC
+  Privacy : aucun lien prouvable entre Alice et Bob
+```
 
-Step 4a (Instant): Un filler détecte l'intent et front les fonds sur Asset Hub
-        → fillOrder() sur IntentSettler côté Asset Hub
-        → L'utilisateur reçoit ses USDC sur Asset Hub (~2s)
-
-Step 4b (Classic): Pipeline direct
-        → executeFallback() après FILLER_WINDOW
-        → Arbitrum Sepolia → Hyperbridge → ZK proof → ISMP → Asset Hub (~7 min)
-
-Step 5: Settlement trustless en arrière-plan (Mode Instant)
-        → Arbitrum Sepolia → Hyperbridge → ZK proof → ISMP → Asset Hub
-        → Le filler récupère ses fonds + fees
+**Fee calculation (frontend) :**
+```
+feeAmount = (amountWei * feeBps) / 10000
+rawReceive = amountWei - feeAmount
+receiveAmount = truncate(rawReceive, 2 decimals)  // match HL usdSend precision
 ```
 
 ---
 
 ## Config Réseau
-
-### Production (Cible)
-
-| Config | Valeur |
-|--------|--------|
-| **Source Chain** | Polkadot Asset Hub (parachain ID 1000) |
-| **Destination Chain** | Arbitrum Sepolia (Hyperliquid L1) |
-| **Messaging** | XCM v5 (Polkadot native) |
-| **Interop Layer** | Hyperbridge (parachain) |
-| **Proof System** | ZK BEEFY (Polkadot consensus proofs) |
-| **Transport** | ISMP (Interoperable State Machine Protocol) |
-| **Token bridgé** | USDC (Asset Hub native) |
-| **Settlement time** | ~6-8 minutes (non-bloquant en mode Instant) |
-| **Fill time (Instant)** | ~2 secondes (dépend des fillers actifs) |
-| **Fill time (Classic)** | ~6-8 minutes (pipeline direct) |
 
 ### Hackathon Demo (Testnet)
 
@@ -892,11 +468,11 @@ Step 5: Settlement trustless en arrière-plan (Mode Instant)
 |--------|--------|
 | **Source Chain** | Polkadot Hub Testnet (chain 420420417) |
 | **Destination Chain** | Arbitrum Sepolia (chain 421614) |
-| **Relay** | Bot simulateur (appelle `markOrderFilled` sur source après détection du fill sur dest) |
-| **Settlement** | Auto-settlement via filler service (dummy proof) |
-| **ISMP** | Contrats implémentent `IIsmpModule` — prêts pour Hyperbridge réel |
-
-**Relay simulateur** : En production, Hyperbridge relayers livrent les messages ISMP entre chaînes. Pour le demo testnet, un bot (`filler/src/relay.ts`) surveille les événements `OrderFilled` sur la destination et appelle `markOrderFilled()` sur la source, simulant le message `FILL_CONFIRMATION` ISMP.
+| **Final Destination** | Hyperliquid Testnet |
+| **TEE Mode** | `mock` (hackathon) / `simulator` (dev) / `dstack` (production) |
+| **Relay** | Bot filler (appelle `markOrderFilled` sur source après détection du fill sur dest) |
+| **Settlement** | TEE attestation via filler service (~5-10s) |
+| **Privacy Pool** | PrivacyPool.sol sur Polkadot Hub (6-10 USDC, time-lock 0-3600s) |
 
 ---
 
@@ -907,91 +483,70 @@ velora/
 ├── contracts/
 │   ├── src/
 │   │   ├── source/
-│   │   │   ├── IntentGateway.sol          # Escrow source (Asset Hub), createOrder, releaseEscrow, executeFallback
-│   │   │   └── OrderStore.sol             # Storage des ordres, status transitions
+│   │   │   ├── IntentGateway.sol          # Escrow source, createPrivateOrder, releaseEscrow
+│   │   │   └── PrivacyPool.sol            # Mixing pool time-locked (6-10 USDC), deposit/withdraw
 │   │   ├── destination/
-│   │   │   ├── IntentSettler.sol           # Settlement destination (Arbitrum Sepolia), fillOrder, verifySettlement
-│   │   │   ├── FillStore.sol              # Storage des fills
-│   │   │   ├── FallbackReceiver.sol       # Réception des fonds en mode Classic Bridge (pas de filler)
-│   │   │   └── FillerRegistry.sol         # Registre optionnel des fillers, staking, réputation
+│   │   │   ├── IntentSettler.sol           # Fill orders (fillId unlinkable), TEE settlement verification
+│   │   │   └── FillerRegistry.sol         # Registre fillers, staking, réputation
 │   │   ├── settlement/
-│   │   │   ├── ProofVerifier.sol          # Vérification des preuves ZK BEEFY
-│   │   │   ├── ISMPHandler.sol            # Interface avec le module ISMP de Hyperbridge
-│   │   │   ├── BEEFYVerifier.sol          # Vérification des commitment roots BEEFY
-│   │   │   └── TEEVerifier.sol            # Vérification attestations TEE (Phala Network)
+│   │   │   └── TEEVerifier.sol            # Vérification attestations TEE (Phala dstack) + TDX quotes
 │   │   ├── libs/
 │   │   │   ├── OrderLib.sol               # Encoding/decoding ordres, hash, status transitions
-│   │   │   ├── FeeCalculator.sol          # Calcul fees dynamiques (Mode Instant)
 │   │   │   └── Constants.sol              # Paramètres protocole, chain IDs, timeouts
-│   │   ├── interfaces/
-│   │   │   ├── IIntentGateway.sol         # Interface escrow source
-│   │   │   ├── IIntentSettler.sol         # Interface settlement destination
-│   │   │   ├── IFillerRegistry.sol        # Interface registre fillers
-│   │   │   ├── IISMP.sol                  # Interface ISMP legacy
-│   │   │   ├── IISMPBridge.sol            # Types ISMP réels : IIsmpModule, IDispatcher, BridgeMessage
-│   │   │   ├── ITEEVerifier.sol           # Interface TEE attestation (Phala Network)
-│   │   │   └── IERC20.sol                 # Interface ERC-20 standard
-│   │   └── adapters/
-│   │       └── ERC7683Adapter.sol         # ERC-7683 OriginAdapter + DestinationAdapter
+│   │   └── interfaces/
+│   │       ├── IIntentGateway.sol         # Interface escrow source
+│   │       ├── IIntentSettler.sol         # Interface settlement destination
+│   │       ├── IFillerRegistry.sol        # Interface registre fillers
+│   │       └── ITEEVerifier.sol           # Interface TEE attestation
 │   ├── test/
-│   │   ├── IntentGateway.t.sol            # Tests escrow : create, cancel, release, fallback, expiry, reentrancy
-│   │   ├── IntentSettler.t.sol            # Tests settlement : fill, verify, double-fill, proof validation
-│   │   ├── FillerRegistry.t.sol           # Tests registre : register, unregister, slash, scoring
-│   │   ├── ProofVerifier.t.sol            # Tests preuves : valid proof, invalid proof, replay protection
-│   │   ├── FeeCalculator.t.sol            # Tests fees : base, congestion, size premium, edge cases
-│   │   ├── ISMPIntegration.t.sol          # Tests ISMP : full flow, settlement, fallback, double delivery
-│   │   ├── AccessControl.t.sol            # Tests access control : Gateway, Settler, Registry, Fallback
-│   │   ├── EndToEnd.t.sol                 # Tests E2E : instant, classic, cancel, multi-filler, TEE settlement
-│   │   ├── TEEVerifier.t.sol              # Tests TEE : enclave mgmt, attestation, replay, timeout
+│   │   ├── IntentGateway.t.sol            # Tests escrow
+│   │   ├── IntentSettler.t.sol            # Tests settlement
+│   │   ├── PrivacyPool.t.sol              # Tests privacy pool
+│   │   ├── TEEVerifier.t.sol              # Tests TEE attestation + TDX quotes
+│   │   ├── FillerRegistry.t.sol           # Tests registre
+│   │   ├── EndToEnd.t.sol                 # Tests E2E
 │   │   └── mocks/
-│   │       ├── MockERC20.sol              # Mock ERC20 pour tests
-│   │       └── MockIsmpHost.sol           # Mock ISMP host pour tests
+│   │       └── MockERC20.sol              # Mock ERC20 pour tests
 │   ├── script/
-│   │   ├── DeployAssetHub.s.sol           # Déploiement IntentGateway sur source chain (Polkadot Hub Testnet)
-│   │   ├── DeployArbitrumSepolia.s.sol    # Déploiement IntentSettler + FillerRegistry + FallbackReceiver (Arb Sepolia)
-│   │   ├── DeployTEEVerifier.s.sol        # Déploiement TEEVerifier (post-deploy, configure sur IntentSettler)
-│   │   └── ConfigureCrossChain.s.sol      # Configuration cross-chain post-déploiement
-│   ├── foundry.toml
-│   └── lib/
-│       ├── forge-std/
-│       └── openzeppelin-contracts/
+│   │   ├── DeployAssetHub.s.sol           # Déploiement source (Polkadot Hub Testnet)
+│   │   ├── DeployArbitrumSepolia.s.sol    # Déploiement destination (Arb Sepolia)
+│   │   └── DeployTEEVerifier.s.sol        # Déploiement TEEVerifier
+│   └── foundry.toml
 │
-├── filler/                                 # Service off-chain du filler (Mode Instant)
+├── filler/                                 # Service off-chain du filler TEE
 │   ├── src/
-│   │   ├── index.ts                       # Entry point, orchestration des services
-│   │   ├── watcher.ts                     # Watch OrderPlaced events sur source chain
-│   │   ├── executor.ts                    # Exécute fillOrder() sur destination, retry avec backoff
-│   │   ├── settler.ts                     # Auto-settlement dual-chain (verify dest + release source)
-│   │   ├── relay.ts                       # Simulateur cross-chain relay (markOrderFilled)
-│   │   ├── state.ts                       # State tracking : cycle de vie complet des fills
-│   │   ├── pricing.ts                     # Logique de fee evaluation (fill ou skip)
-│   │   ├── tee.ts                         # Client TEE Phala Network (attestation requests)
-│   │   └── config.ts                      # RPC endpoints, clés, paramètres multi-chain
+│   │   ├── index.ts                       # Entry point, orchestration
+│   │   ├── pool-watcher.ts               # Watch PrivacyDeposit events, decrypt secrets, trigger withdraw
+│   │   ├── watcher.ts                     # Watch PrivateOrderPlaced events sur source chain
+│   │   ├── executor.ts                    # Decrypt dest, fresh wallet, bridge HL, usdSend
+│   │   ├── settler.ts                     # TEE attestation settlement + releaseEscrow
+│   │   ├── relay.ts                       # Cross-chain relay (markOrderFilled)
+│   │   ├── state.ts                       # Lifecycle tracking (DETECTED → RELEASED)
+│   │   ├── tee.ts                         # Client TEE Phala dstack (3 clés, attestation, ECIES)
+│   │   ├── api.ts                         # HTTP API (fillTxHash, freshWallet, settleTxHash, fillId)
+│   │   └── config.ts                      # RPC, clés, paramètres multi-chain
 │   ├── package.json
-│   └── tsconfig.json
+│   ├── tsconfig.json
+│   ├── Dockerfile
+│   └── docker-compose.yml
 │
 ├── frontend/                               # Interface utilisateur
 │   ├── src/
-│   │   ├── App.jsx                        # Router principal, layout, footer
+│   │   ├── App.jsx                        # Router principal, layout
 │   │   ├── main.jsx                       # Entry point React
 │   │   ├── components/
-│   │   │   ├── BridgeWidget.jsx           # Widget de bridge avec state machine (approve → create → fill → settle → deposit HL)
-│   │   │   ├── ConnectButton.jsx          # Connexion wallet EVM (MetaMask, etc.)
-│   │   │   ├── FaucetButton.jsx           # Mint 1000 mock USDC sur source chain
-│   │   │   ├── StaggeredMenu.jsx          # Menu burger avec animations GSAP
-│   │   │   ├── Plasma.jsx                 # Background WebGL animé
-│   │   │   ├── ProfileCard.jsx            # Carte membre équipe
-│   │   │   ├── ResourcesPage.jsx          # Documentation intégrée
-│   │   │   ├── TeamPage.jsx               # Page équipe
-│   │   │   └── ElasticSlider.jsx          # Slider fee (composant UI)
+│   │   │   ├── BridgeWidget.jsx           # Widget bridge (state machine complète + validation toast + TEE trace)
+│   │   │   ├── ConnectButton.jsx          # Connexion wallet EVM
+│   │   │   ├── FaucetButton.jsx           # Mint 10 USDC (fast polling ~2-3s)
+│   │   │   └── ...                        # Plasma, Menu, ProfileCard, etc.
 │   │   └── config/
 │   │       ├── contracts.js               # Adresses déployées, ABIs, chain configs
 │   │       └── wagmi.js                   # Configuration wagmi (chains, transports)
-│   ├── package.json
-│   └── vite.config.js
+│   └── package.json
 │
-├── POLKADOT.md                             # Ce fichier
-└── .gitignore
+├── README.md                               # Documentation principale (EN)
+├── POLKADOT.md                             # Ce fichier — documentation technique détaillée (FR)
+└── Velora.md                               # Documentation privacy design (FR)
 ```
 
 ---
@@ -1000,16 +555,8 @@ velora/
 
 ### Suite de Tests
 
-| Fichier | Tests | Description |
-|---------|-------|-------------|
-| `IntentGateway.t.sol` | Unit + Fuzz | Create order (fee>0 et fee=0), cancel after deadline, release with valid proof, reject invalid proof, executeFallback, reentrancy, double release, expiry edge cases |
-| `IntentSettler.t.sol` | Unit + Fuzz | Fill order, double-fill revert, verify settlement, invalid proof revert, settled status, fill after deadline revert |
-| `FillerRegistry.t.sol` | Unit | Register, unregister cooldown, slash, score calculation, active fillers list |
-| `ProofVerifier.t.sol` | Unit | Valid ZK BEEFY proof, invalid proof, tampered proof, replay attack protection |
-| `FeeCalculator.t.sol` | Unit + Fuzz | Base fee, congestion premium, size premium, min/max bounds, fuzz input ranges |
-
 ```bash
-# Lancer tous les tests
+# Lancer tous les tests (83 tests)
 cd contracts && forge test -vvv
 
 # Tests fuzz
@@ -1021,296 +568,92 @@ forge coverage
 
 ---
 
-## Sécurité & Risques
-
-### Protections Implémentées
-
-```
-1. Double-fill protection
-   → Un orderId ne peut être fill qu'une seule fois
-   → fillOrder() revert si le fill existe déjà
-
-2. Deadline enforcement
-   → L'utilisateur fixe un deadline à la création
-   → Après deadline : cancelOrder() possible (remboursement intégral)
-   → Avant deadline : annulation impossible (protection du filler)
-
-3. Proof verification
-   → releaseEscrow() requiert une preuve ZK BEEFY valide
-   → La preuve est vérifiée on-chain par le module Hyperbridge/ISMP
-   → Pas de trust assumption : vérification cryptographique pure
-
-4. ReentrancyGuard
-   → Toutes les fonctions mutatives sont protégées
-   → Empêche les attaques de réentrance sur lock/release
-
-5. Pausable
-   → Le owner peut pauser les contrats en cas d'urgence
-   → Utile en cas de bug découvert ou de comportement anormal
-
-6. Filler staking (optionnel)
-   → Les fillers stakent des USDC comme garantie (min 100 USDC)
-   → Slash possible en cas de comportement malveillant
-   → Incite les fillers à être fiables
-
-7. Mode Classic = safety net
-   → Si aucun filler ne répond (même en mode Instant), executeFallback() prend le relais
-   → L'utilisateur reçoit TOUJOURS ses fonds, quel que soit le mode choisi
-   → Le protocole garantit la livraison dans 100% des cas
-```
-
-### Risques
-
-```
-1. Risque de liquidité filler (Mode Instant uniquement)
-   → Si aucun filler n'a de liquidité → le système bascule automatiquement en Classic (~6-8 min)
-   → L'utilisateur reçoit toujours ses fonds — les fillers sont une couche d'accélération
-   → Mitigation : fee dynamique incite de nouveaux fillers quand la liquidité est basse
-
-2. Risque de settlement delay
-   → Si Hyperbridge/BEEFY est lent → le filler attend plus longtemps pour le remboursement
-   → En mode Classic : l'utilisateur attend plus longtemps pour ses fonds
-   → Mitigation : le capital du filler est temporairement bloqué, pas perdu
-
-3. Smart contract risk
-   → Bug dans IntentGateway ou IntentSettler → perte de fonds possible
-   → Mitigation : audits, tests fuzz, bug bounty, déploiement progressif
-
-4. Risque XCM/Hyperbridge
-   → Si la couche d'interop est down → le settlement est bloqué (les deux modes)
-   → Mitigation : timeout + fallback (cancel après deadline)
-
-5. Risque de prix (pour le filler)
-   → Le filler front des USDC stables → pas de risque de prix sur USDC
-   → Risque uniquement si le token bridgé est volatile (non applicable pour USDC)
-```
-
----
-
-## Calculs Mathématiques Clés
-
-### 1. Hash de l'ordre (orderId)
-
-```
-orderId = keccak256(abi.encodePacked(
-    user,
-    token,
-    amount,
-    destChain,
-    destAddress,
-    feeOffer,     // 0 = Classic, >0 = Instant
-    deadline,
-    nonce
-))
-
-→ Unique par combinaison user + paramètres + nonce
-→ Le nonce empêche les collisions si un user crée plusieurs ordres identiques
-→ feeOffer = 0 identifie un ordre Classic Bridge
-```
-
-### 2. Fee dynamique suggérée (Mode Instant uniquement)
-
-```
-suggested_fee = base_fee + congestion_premium + size_premium
-
-Où :
-  base_fee           = MIN_FEE_BPS × amount / 10000    (ex: 5 bps = 0.05%)
-  congestion_premium = pending_orders / active_fillers × CONGESTION_MULTIPLIER
-  size_premium       = max(0, (amount - LARGE_ORDER_THRESHOLD) × SIZE_BPS / 10000)
-
-Exemple pour 100 USDC, 10 ordres pending, 5 fillers actifs :
-  base_fee           = 5 × 100 / 10000 = 0.05 USDC
-  congestion_premium = 10/5 × 0.02 = 0.04 USDC
-  size_premium       = 0 (sous le seuil de 10,000 USDC)
-  suggested_fee      = 0.09 USDC (~9 bps)
-
-Note : en mode Classic, la fee est 0 — ce calcul ne s'applique pas.
-```
-
-### 3. Capital efficiency du filler
-
-```
-capital_efficiency = fills_per_day / (capital / avg_order_size)
-
-Avec settlement ~8 min :
-  rotations_per_hour = 60 / 8 = 7.5
-  rotations_per_day  = 7.5 × 24 = 180
-  → Un capital de 10,000 USDC peut fill jusqu'à 1,800,000 USDC/jour
-
-Rendement annualisé :
-  APR = avg_fee_bps × rotations_per_day × 365 / 10000
-  APR = 10 × 180 × 365 / 10000 = 65,700 bps = 657%
-
-Note : rendement théorique maximum — en pratique limité par la demande réelle
-et la proportion d'ordres Instant vs Classic
-```
-
----
-
-## Déploiement
-
-### Prérequis
-
-```bash
-# Installer Foundry
-curl -L https://foundry.paradigm.xyz | bash
-foundryup
-
-# Installer Node.js (>= 18)
-# Cloner le repo
-git clone https://github.com/aydi26/polkadot-hackathon.git
-cd polkadot-hackathon
-```
-
-### Contracts — Build & Test
-
-```bash
-cd contracts
-forge install
-forge build
-forge test -vvv
-
-# Coverage
-forge coverage
-```
-
-### Contracts — Déploiement (Testnet)
-
-```bash
-cp .env.example .env
-# Remplir PRIVATE_KEY, RPC_SOURCE, RPC_DESTINATION, USDC addresses
-
-# Déploiement IntentGateway (Polkadot Hub Testnet — Source)
-forge script script/DeployAssetHub.s.sol --chain polkadot-testnet --rpc-url https://eth-rpc-testnet.polkadot.io/ --broadcast
-
-# Déploiement IntentSettler + FillerRegistry + FallbackReceiver (Arb Sepolia — Destination)
-forge script script/DeployArbitrumSepolia.s.sol --rpc-url https://sepolia-rollup.arbitrum.io/rpc --broadcast
-
-# Configuration cross-chain
-forge script script/ConfigureCrossChain.s.sol --rpc-url $RPC_DESTINATION --broadcast
-```
-
-### Filler — Run
-
-```bash
-cd filler
-npm install
-cp .env.example .env
-# Remplir RPC endpoints, clés du filler, adresses des contrats
-
-npm run start      # Démarre le service filler
-npm run dev        # Mode développement avec hot reload
-```
-
-### Frontend — Dev & Build
-
-```bash
-cd frontend
-npm install
-npm run dev       # Dev server → http://localhost:5173
-npm run build     # Build production → dist/
-```
-
-### Ordre de déploiement complet
-
-```
-Phase 1 — Contrats Source (Asset Hub) :
-  1. IntentGateway.sol → Escrow + OrderStore
-  2. Configurer les paramètres : token whitelist, timeouts
-
-Phase 2 — Contrats Destination (Arbitrum Sepolia) :
-  1. IntentSettler.sol → Fill + Settlement verification
-  2. FallbackReceiver.sol → Réception fonds Classic Bridge
-  3. FillerRegistry.sol → Registre fillers (optionnel)
-  4. Configurer le lien ISMP avec Hyperbridge
-
-Phase 3 — Filler Infrastructure :
-  1. Déployer le service filler
-  2. Alimenter le filler en USDC sur Arbitrum Sepolia
-  3. Register le filler dans FillerRegistry
-
-Phase 4 — Frontend :
-  1. Configurer les adresses dans contracts.ts
-  2. Déployer le dashboard avec le toggle Instant/Classic
-```
-
----
-
 ## Ce qui est implémenté
 
 ### Smart Contracts
 
 | Contrat | État | Description |
 |---------|------|-------------|
-| IntentGateway | Implémenté | Escrow source, createOrder (fee>0 Instant, fee=0 Classic), releaseEscrow, executeFallback, cancelOrder |
-| IntentSettler | Implémenté | Settlement destination, fillOrder, verifySettlement |
-| FallbackReceiver | Implémenté | Réception fonds Classic Bridge via ISMP |
+| PrivacyPool | Implémenté | Mixing pool time-locked, montants standards (6-10 USDC), encrypted secrets, TEE-only withdraw |
+| DepositRouter | Implémenté | Privacy proxy — masque l'adresse user dans les events Transfer |
+| IntentGateway | Implémenté | Escrow source, createPrivateOrder (ECIES encrypted dest), releaseEscrow (TEE attestation), TEE pubkey storage |
+| IntentSettler | Implémenté | Fill avec fillId unlinkable, verifyTEESettlement, verifyTEESettlementWithQuote |
+| TEEVerifier | Implémenté | Vérification attestations TEE + TDX quote recording on-chain |
 | FillerRegistry | Implémenté | Registre fillers, staking, réputation, slash |
-| ProofVerifier | Implémenté | Vérification preuves ZK BEEFY (placeholder hackathon) |
-| ISMPHandler | Implémenté | Interface ISMP pour Hyperbridge (placeholder hackathon) |
-| BEEFYVerifier | Implémenté | Vérification commitment roots BEEFY (placeholder hackathon) |
-| OrderLib | Implémenté | Encoding/decoding, hash, status transitions |
-| FeeCalculator | Implémenté | Fees dynamiques, congestion, size premium |
+| OrderLib | Implémenté | Encoding/decoding, computePrivateOrderId, status transitions |
 | Constants | Implémenté | Paramètres protocole |
 
 ### Filler Service
 
 | Module | État | Description |
 |--------|------|-------------|
-| Watcher | Implémenté | Listen OrderPlaced events sur source chain |
-| Executor | Implémenté | Execute fillOrder() sur destination chain, retry avec backoff exponentiel |
-| Settler | Implémenté | Auto-settlement dual-chain : verifySettlement (dest) + releaseEscrow (source) |
-| Pricing | Implémenté | Évaluation fee/profitabilité avant fill |
-| State | Implémenté | Tracking complet du cycle de vie : DETECTED → FILLING → FILLED → SETTLING → SETTLED → RELEASED |
-| Relay | Implémenté | Simulateur cross-chain relay (markOrderFilled sur source après détection du fill sur dest) |
+| PoolWatcher | Implémenté | Détecte PrivacyDeposit, déchiffre secrets, trigger withdraw après time-lock |
+| Watcher | Implémenté | Détecte PrivateOrderPlaced events sur source chain |
+| Executor | Implémenté | Déchiffre destination, crée fresh wallet, bridge vers HL, usdSend vers dest |
+| Settler | Implémenté | TEE attestation settlement dual-chain + releaseEscrow |
+| Relay | Implémenté | Cross-chain relay (markOrderFilled sur source après fill sur dest) |
+| State | Implémenté | Tracking complet : DETECTED → FILLING → FILLED → SETTLING → SETTLED → RELEASED |
+| TEE | Implémenté | Client Phala dstack : 3 clés dérivées, attestation TDX, ECIES decrypt, fillId generation |
+| API | Implémenté | HTTP API : fillTxHash, freshWalletAddress, settleTxHash, releaseTxHash, fillId |
 
 ### Frontend
 
-| Page / Feature | État | Description |
-|---------------|------|-------------|
-| Bridge Widget | Implémenté | Widget de bridge avec state machine complète : approve → create → fill → settle → deposit HL |
-| Auto-deposit HL | Implémenté | Après settlement, dépose automatiquement sur Hyperliquid Testnet via Bridge2 |
-| Faucet Button | Implémenté | Mint 1000 mock USDC sur Polkadot Hub avec animation droplet |
-| Resources Page | Implémenté | Documentation intégrée du protocole |
-| Team Page | Implémenté | Page équipe |
-| Wallet Connect | Implémenté | Connexion wallet EVM (MetaMask, etc.) |
+| Feature | État | Description |
+|---------|------|-------------|
+| Bridge Widget | Implémenté | State machine complète : approve → deposit pool → privacy lock → fill → settle → complete |
+| Fast Faucet | Implémenté | Mint 10 USDC avec fast polling (500ms, ~2-3s confirmation) et gas explicite |
+| Max Button | Implémenté | Sélectionne le solde wallet (clampé 6-10 USDC) |
+| Amount Validation | Implémenté | Toast bottom-right pour montants invalides (< 6, > 10, décimaux) |
+| TEE Trace | Implémenté | Écran completion avec fresh wallet, settlement TX, fill ID, badge "Verified by TEE" |
+| Track Tab | Implémenté | Monitoring d'ordres par ID avec polling live |
+| Wallet Connect | Implémenté | Connexion wallet EVM (MetaMask, Rabby, etc.) |
 
-### ISMP Integration
+---
 
-| Contrat | IIsmpModule | Description |
-|---------|-------------|-------------|
-| IntentGateway | Implémenté | `onAccept()` : décode FILL_CONFIRMATION → `_markOrderFilled()` |
-| IntentSettler | Implémenté | `onAccept()` : décode SETTLEMENT_RELEASE → marque fill settled |
-| FallbackReceiver | Implémenté | `onAccept()` : décode FALLBACK_DELIVERY → livre tokens |
-| ISMPHandler | Implémenté | `dispatchSettlement()` avec vrais types `DispatchPost` + `StateMachine` |
-| IISMPBridge | Implémenté | Types ISMP locaux : PostRequest, IIsmpModule, IDispatcher, BridgeMessage |
+## Sécurité & Risques
 
-### ERC-7683 Compatibility
+### Protections Implémentées
 
-| Contrat | Description |
-|---------|-------------|
-| ERC7683OriginAdapter | Wraps IntentGateway — `open()` → `createOrder()`, `resolve()` pour fillers |
-| ERC7683DestinationAdapter | Wraps IntentSettler — `fill()` → `fillOrder()` |
+```
+1. Privacy Pool mixing
+   → Les fonds sont mélangés dans le pool avec d'autres dépôts du même montant
+   → Time-lock configurable empêche le retrait immédiat
+   → L'ordre est créé par le pool (pas l'utilisateur)
 
-### Tests
+2. ECIES encryption (destination + secret)
+   → Seul le TEE peut déchiffrer l'adresse de destination
+   → Seul le TEE peut déchiffrer le secret de retrait
+   → Les blobs on-chain sont opaques
 
-| Suite | Tests | Description |
-|-------|-------|-------------|
-| IntentGateway.t.sol | Unit + Fuzz | Create, cancel, release, fallback, expiry, reentrancy |
-| IntentSettler.t.sol | Unit + Fuzz | Fill, verify, double-fill, proof validation |
-| FillerRegistry.t.sol | Unit | Register, unregister, slash, scoring |
-| ProofVerifier.t.sol | Unit | ZK BEEFY proof, invalid proof, replay protection |
-| FeeCalculator.t.sol | Unit + Fuzz | Base, congestion, size premium, min/max bounds |
-| ISMPIntegration.t.sol | Unit | Full instant flow, settlement via ISMP, fallback, double delivery |
-| AccessControl.t.sol | Unit | Gateway, Settler, FallbackReceiver, FillerRegistry access restrictions |
-| EndToEnd.t.sol | Unit | E2E instant, classic fallback, cancel, multiple fillers, double fill prevention |
+3. Unlinkable fillId
+   → keccak256(sourceOrderId, teeSecret)
+   → Pas de lien on-chain entre source et destination
 
-### À compléter (Roadmap Production)
+4. Fresh wallet single-use
+   → Un wallet aléatoire est créé pour chaque fill
+   → Les fonds transitent par ce wallet avant d'arriver à destination
+   → Le wallet est jeté après usage — pas de pattern traçable
 
-- Remplacement des dummy proofs par de vraies preuves ZK BEEFY quand Hyperbridge supporte Arbitrum Sepolia
-- Connexion wallet Polkadot (SubWallet, Talisman) en plus du wallet EVM
-- Audit de sécurité complet
-- Déploiement mainnet (Asset Hub + Arbitrum Sepolia)
+5. TEE attestation (Intel TDX)
+   → Le filler prouve qu'il a exécuté correctement dans une enclave
+   → TDX quote enregistré on-chain pour auditabilité
+   → Wallet TEE dérivé déterministiquement (lié à l'app-id)
+
+6. Double-fill protection
+   → Un orderId ne peut être fill qu'une seule fois
+   → fillOrder() revert si le fill existe déjà
+
+7. Deadline enforcement
+   → Après deadline : cancelOrder() possible
+   → Avant deadline : annulation impossible
+
+8. ReentrancyGuard
+   → Toutes les fonctions mutatives sont protégées
+
+9. Standardized amounts
+   → Seulement 6, 7, 8, 9, 10 USDC enforced dans le contrat
+   → Frontend affiche toast si montant invalide
+```
 
 ---
 
@@ -1322,44 +665,27 @@ Phase 4 — Frontend :
 |---------|-------|
 | OpenZeppelin 5.x | ERC-20, SafeERC20, ReentrancyGuard, Pausable, Ownable |
 | forge-std | Testing framework, Script, console2 |
-| Hyperbridge ISMP | Interface ISMP pour vérification cross-chain |
 
 ### Filler (Node.js / TypeScript)
 
 | Package | Usage |
 |---------|-------|
-| ethers v6 | Interaction avec Arbitrum Sepolia (EVM) |
-| @polkadot/api | Interaction avec Asset Hub (Substrate) |
-| typescript | Typage statique |
+| ethers v6 | Interaction EVM (Polkadot Hub + Arbitrum Sepolia) |
+| @phala/dstack-sdk | TEE client (TappdClient, deriveKey, tdxQuote) |
+| eciesjs | ECIES encryption/decryption secp256k1 |
 
 ### Frontend (React / JavaScript)
 
 | Package | Usage |
 |---------|-------|
-| react | Framework UI |
-| typescript | Typage statique |
+| react 19 | Framework UI |
 | vite | Bundler + dev server |
-| wagmi v3 + viem | Interaction EVM (Arbitrum Sepolia) |
-| @tanstack/react-query | Data fetching |
+| wagmi v3 + viem | Interaction EVM, contract reads/writes |
+| @tanstack/react-query | Data fetching (wagmi dependency) |
+| eciesjs | ECIES encryption (destination + secret) |
+| motion/react | Animations (Framer Motion) |
+| gsap + ogl | Background WebGL + menu animations |
 | react-router-dom | Routing |
-| gsap | Animations (menu, transitions) |
-| motion | Animation droplet (Framer Motion) |
-
----
-
-## Points d'Attention
-
-1. **Le choix Instant/Classic est déterminé par la `feeOffer`** — fee > 0 = Instant Bridge (filler prend l'ordre), fee = 0 = Classic Bridge (pipeline direct). Le frontend expose ce choix via un toggle clair
-2. **Le fill instantané dépend de la liquidité filler** — S'il n'y a pas de filler actif avec assez de liquidité, même en mode Instant, le système bascule automatiquement en Classic Bridge. L'utilisateur reçoit toujours ses fonds
-3. **Settlement ~6-8 min est une estimation** — Dépend de la latence BEEFY, Hyperbridge, et ISMP. Peut varier selon la congestion du réseau Polkadot
-4. **ZK BEEFY est la clé du trustless** — Les deux modes (Instant et Classic) reposent sur les preuves ZK BEEFY. Sans preuve ZK, le settlement nécessiterait un comité multisig ou un challenge period
-5. **XCM v5 est requis** — Les versions antérieures de XCM ne supportent pas toutes les primitives nécessaires (notamment Transact et le dry-run)
-6. **Le filler prend un risque temporaire** — Il front les fonds ~6-8 min avant d'être remboursé. Ce risque est compensé par les fees (Mode Instant uniquement)
-7. **Double-fill protection est critique** — Un bug dans la protection double-fill pourrait permettre à plusieurs fillers de fill le même ordre
-8. **Deadline ≠ settlement timeout** — Le deadline est pour la création de l'intent (pas de fill après). Le settlement timeout est pour le processus de preuve
-9. **USDC seulement dans un premier temps** — Le protocole peut être étendu à d'autres tokens, mais le risque de prix complique le modèle filler pour les tokens volatils
-10. **Hyperbridge doit être opérationnel** — Si Hyperbridge est down, les deux modes sont bloqués (mais les fonds ne sont pas perdus — cancel possible après deadline)
-11. **Le bridge retour utilise le même mécanisme** — IntentGateway + IntentSettler déployés sur les deux chaînes, pipeline inversé, même choix Instant/Classic
 
 ---
 
@@ -1367,15 +693,13 @@ Phase 4 — Frontend :
 
 | Ressource | Lien |
 |-----------|------|
+| Phala dstack — Confidential VMs | `https://github.com/Phala-Network/dstack` |
 | ERC-7683 — Cross-Chain Intents Standard | `https://eips.ethereum.org/EIPS/eip-7683` |
-| Across Protocol — Intent-Based Bridge | `https://docs.across.to` |
-| Polkadot XCM v5 — Documentation | `https://wiki.polkadot.network/docs/learn-xcm` |
 | Hyperbridge — Interoperability Protocol | `https://docs.hyperbridge.network` |
-| BEEFY — Bridge Efficiency Enabling Finality Yielder | `https://wiki.polkadot.network/docs/learn-beefy` |
 | ISMP — Interoperable State Machine Protocol | `https://docs.hyperbridge.network/protocol/ismp` |
+| Polkadot BEEFY | `https://wiki.polkadot.network/docs/learn-beefy` |
 | Hyperliquid — Documentation | `https://hyperliquid.gitbook.io/hyperliquid-docs` |
 | Hyperliquid — Testnet Bridge | `https://app.hyperliquid-testnet.xyz` |
-| Polkadot Asset Hub | `https://wiki.polkadot.network/docs/learn-guides-assets-create` |
 | OpenZeppelin Contracts 5.x | `https://docs.openzeppelin.com/contracts` |
 | Foundry Book | `https://book.getfoundry.sh` |
 

@@ -102,6 +102,34 @@
   flex-shrink: 0;
 }
 
+.paseo-faucet-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 16px;
+  border-radius: 12px;
+  border: 1px solid rgba(230, 0, 122, 0.25);
+  background: rgba(230, 0, 122, 0.08);
+  color: #E6007A;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  font-family: inherit;
+  white-space: nowrap;
+  text-decoration: none;
+}
+
+.paseo-faucet-btn:hover {
+  background: rgba(230, 0, 122, 0.15);
+  border-color: rgba(230, 0, 122, 0.4);
+  transform: translateY(-1px);
+}
+
+.paseo-faucet-btn:active {
+  transform: none;
+}
+
 /* ===== MAIN ===== */
 .app-main {
   flex: 1;
