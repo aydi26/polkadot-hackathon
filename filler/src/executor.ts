@@ -139,10 +139,13 @@ export class OrderExecutor {
       ],
     };
 
+    // Match Python SDK: str(float) always includes decimal point (6.0 → "6.0", 7.5 → "7.5")
+    const amountStr = Number.isInteger(amountUsd) ? amountUsd.toFixed(1) : String(amountUsd);
+
     const message = {
       hyperliquidChain: "Testnet",
       destination,
-      amount: amountUsd.toString(),
+      amount: amountStr,
       time: timestamp,
     };
 
@@ -155,7 +158,7 @@ export class OrderExecutor {
         hyperliquidChain: "Testnet",
         signatureChainId: "0x66eee",
         destination,
-        amount: amountUsd.toString(),
+        amount: amountStr,
         time: timestamp,
       },
       nonce: timestamp,
